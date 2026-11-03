@@ -1,0 +1,17 @@
+# creati da build_exe.py (exe, setup, icona) e da Python
+dist/
+build/
+__pycache__/
+*.pyc
+*.spec
+timbro.ico
+
+# file di prova
+*.log
+
+# guida col nome precedente del programma (ora "Guida TimbroEasyPDF.pdf"): si può cancellare
+Guida TimbroPDF.pdf
+
+# mai nel repository: chiavi private dei certificati
+*.pfx
+*.p12

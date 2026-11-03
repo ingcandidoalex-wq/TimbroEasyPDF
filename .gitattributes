@@ -1,0 +1,2 @@
+# i sorgenti restano con fine riga LF, come sono scritti; pdf e dati dell'OCR sono riconosciuti come binari
+* text=auto eol=lf
