@@ -225,7 +225,7 @@ class FakeDialog:
     result_next = None
     seen = None
 
-    def __init__(self, parent, fonts, title, params, original=None, whiteout=None):
+    def __init__(self, parent, fonts, title, params, original=None, whiteout=None, preview=None):
         FakeDialog.seen = dict(params=params, whiteout=whiteout, title=title)
         self.top = tk.Toplevel(parent)
         self.result = FakeDialog.result_next

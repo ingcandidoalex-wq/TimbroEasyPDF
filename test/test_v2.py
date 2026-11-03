@@ -349,7 +349,7 @@ print("unione: scelta dei documenti e del loro ordine: ok")
 class FakeText:
     result_next = None
 
-    def __init__(self, parent, fonts, title, params, original=None, whiteout=None):
+    def __init__(self, parent, fonts, title, params, original=None, whiteout=None, preview=None):
         self.top = tk.Toplevel(parent)
         self.result = FakeText.result_next
         parent.after(20, self.top.destroy)

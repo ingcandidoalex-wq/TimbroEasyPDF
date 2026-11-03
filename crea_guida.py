@@ -71,6 +71,14 @@ def grab(window, name, marks=(), crop=None):
     rgb = bytearray(w * h * 3)
     rgb[0::3], rgb[1::3], rgb[2::3] = raw[2::4], raw[1::4], raw[0::4]
     pix = pymupdf.Pixmap(pymupdf.csRGB, w, h, bytes(rgb), False)
+    # a volte Windows restituisce neri i bordi invisibili della finestra (a destra e in basso): si tolgono
+    black = bytes(3)
+    right = next(k for k in range(w) if any(rgb[(y * w + w - 1 - k) * 3:(y * w + w - k) * 3] != black
+                                             for y in range(40, h, 25)))
+    bottom = next(k for k in range(h) if any(rgb[((h - 1 - k) * w + x) * 3:((h - 1 - k) * w + x + 1) * 3] != black
+                                              for x in range(0, w, 25)))
+    if (right or bottom) and not crop:
+        crop = (rect.left, rect.top, rect.right - right, rect.bottom - bottom)
     # evidenziazioni: riquadri rossi con un numero
     doc = pymupdf.open()
     page = doc.new_page(width=w, height=h)
@@ -226,6 +234,24 @@ def shots():
     settle(root)
     grab(dialog.top, "firma")
     dialog.top.destroy()
+    # 3b. modifica del timbro: un tratto di evidenziatore
+    app.select_stamp(0)
+    item = app.library.items[0]
+    editor = tp.StampEditor(root, app.fonts, pymupdf.Pixmap(app.stamp.original_png), item["width_mm"],
+                            f"Modifica timbro «{item['name']}»", name=item["name"], rotation=item["rotate"],
+                            remove_white=item["remove_white"], tolerance=item["white_tolerance"])
+    settle(root)
+    editor.tool_var.set("highlight")
+    editor._tool_changed()
+    w, h, f = editor.colors.width, editor.colors.height, editor.f
+    points = [(round(editor.ox + (0.12 + 0.76 * k / 20) * w * f), round(editor.oy + 0.86 * h * f)) for k in range(21)]
+    editor.canvas.event_generate("<ButtonPress-1>", x=points[0][0], y=points[0][1])
+    for x, y in points[1:]:
+        editor.canvas.event_generate("<B1-Motion>", x=x, y=y, state=0x100)
+    editor.canvas.event_generate("<ButtonRelease-1>", x=points[-1][0], y=points[-1][1])
+    settle(root)
+    grab(editor.top, "editor_timbro")
+    editor.top.destroy()
     # 4. testo: riga evidenziata, finestra di modifica, casella aggiunta
     app.view.yview_moveto(0)
     settle(root, 0.3)
@@ -314,7 +340,9 @@ d'una; trascinale per riordinarle o portarle in un altro PDF.</li>
 <li><b>Timbri e firme</b>: la galleria dei timbri salvati e le impostazioni di quello scelto.</li>
 </ol>
 <p>Tutte le modifiche valgono per la scheda attiva e vanno salvate con <b>Salva…</b> (Ctrl+S).
-Per aprire i PDF puoi anche trascinarli da Esplora risorse sulla finestra.</p>"""),
+Per aprire i PDF puoi anche trascinarli da Esplora risorse sulla finestra. Le finestre per aprire,
+salvare, esportare e scegliere le immagini dei timbri ripartono ognuna dall'ultima cartella usata per
+quell'operazione.</p>"""),
     ("Apporre un timbro", "modo_timbro", 100, """
 <p>Scegli il timbro nella galleria (2) con un clic o con i tasti 1–9, imposta la larghezza in millimetri e
 premi <b>Attiva modalità timbro</b> (1) o il tasto T. Il timbro segue il mouse: clicca sul foglio per
@@ -322,16 +350,32 @@ apporlo. Puoi cambiare pagina e cliccare di nuovo dove serve. Esc per uscire.</p
 <p><b>Rimuovi sfondo bianco</b> rende trasparente il bianco di una scansione; <b>Primo piano</b> o
 <b>Secondo piano</b> mettono il timbro sopra o sotto testo e disegni. <b>Ripeti su tutte le pagine</b>
 lo copia nella stessa posizione sulle altre pagine (o su quelle selezionate).</p>"""),
-    ("Spostare ed eliminare timbri e testi", "timbri_apposti", 100, """
+    ("Spostare, ruotare e modificare timbri e testi", "timbri_apposti", 100, """
 <p>Fuori dalla modalità timbro, passando sopra un timbro o una casella di testo compare un bordo
-tratteggiato (1): <b>trascinalo</b> per spostarlo, <b>Canc</b> o tasto destro per eliminarlo. Funziona
-anche sui PDF già salvati e riaperti. Ctrl+Z annulla.</p>"""),
+tratteggiato (1): <b>trascinalo</b> per spostarlo, <b>doppio clic</b> per modificarlo, <b>Canc</b> per
+eliminarlo. Con il <b>tasto destro</b> un timbro si ruota a destra o a sinistra attorno al suo centro.
+Funziona anche sui PDF già salvati e riaperti. Ctrl+Z annulla.</p>
+<p>Il doppio clic su un timbro apposto apre la stessa finestra di modifica della galleria, ma cambia
+solo quel timbro, che resta dov'era. Su una firma o una data scritta da tastiera puoi correggere
+direttamente il testo (per esempio la data), senza toglierla e rimetterla.</p>"""),
     ("Firme", "firma", 75, """
 <p><b>Crea firma…</b> nel pannello dei timbri: disegnala con mouse, penna o dito, oppure scrivila con la
 tastiera scegliendo font, dimensione e colore. Viene salvata nella galleria e si appone come un timbro.
-<b>Modifica…</b> (o doppio clic sulla firma) la riapre con il suo testo o il suo disegno e la aggiorna senza
-crearne un'altra. Di un timbro caricato da immagine si può sostituire l'immagine, mantenendo nome e
-impostazioni.</p>"""),
+Lo stesso vale per una data o una dicitura: scrivila con il font che preferisci.</p>"""),
+    ("Modificare e ruotare i timbri", "editor_timbro", 85, """
+<p><b>Modifica…</b> (o doppio clic nella galleria) apre il timbro, di qualunque tipo:</p>
+<ul>
+<li><b>Ruota a sinistra / a destra</b>: le misure vere nel PDF restano le stesse;</li>
+<li><b>Matita</b>, <b>Evidenziatore</b> (semitrasparente) e <b>Gomma</b>, con colore e spessore;</li>
+<li><b>Testo</b>: clicca dove scrivere e scegli font, dimensione e colore, vedendo subito il risultato;</li>
+<li><b>Apri con l'editor di immagini…</b> lo apre nel programma di Windows (di solito Paint): quando lo
+salvi lì, nella finestra si aggiorna da solo;</li>
+<li><b>Sostituisci immagine…</b> mette un'altra immagine mantenendo nome e impostazioni.</li>
+</ul>
+<p>Le firme create nel programma si possono anche <b>riscrivere</b> o <b>ridisegnare</b>; dopo un ritocco
+con matita, gomma o testo restano un'immagine. Annulla e Ripristina (Ctrl+Z, Ctrl+Y) tornano indietro.
+I pulsanti ↺ e ↻ sotto la galleria ruotano al volo il timbro scelto. Le modifiche valgono per i timbri
+apposti da quel momento in poi.</p>"""),
     ("Correggere il testo del PDF", "modifica_testo", 100, """
 <p>Con <b>Modifica testo</b> (1) le righe si colorano passandoci sopra: clicca quella da correggere.
 Il vecchio testo viene eliminato davvero e il nuovo è scritto nello stesso punto, con il font più simile.
@@ -340,7 +384,9 @@ Nelle scansioni spunta <b>Copri con il bianco lo sfondo</b>.</p>
 strumento attivo; un clic le corregge. <b>Bianchetto</b> e <b>Oscura</b>: trascina un rettangolo,
 quanto c'è sotto viene cancellato davvero.</p>"""),
     ("La finestra del testo", "dialogo_testo", 75, """
-<p>Scrivi il testo (Invio va a capo, Ctrl+Invio conferma), scegli font, dimensione e colore.
+<p>Scrivi il testo (Invio va a capo, Ctrl+Invio conferma), scegli font, dimensione e colore: il testo
+nel riquadro prende subito il font e il colore scelti e, mentre scrivi, compare anche sulla pagina, nel
+punto e nella misura in cui verrà scritto. La finestra si sposta da sola per non coprirlo.
 L'ultimo stile usato viene ricordato.</p>"""),
     ("Vista d'insieme di tutti i PDF", "vista_insieme", 100, """
 <p><b>Vista d'insieme</b> (F4) mostra al posto della pagina le miniature di tutti i PDF aperti, una

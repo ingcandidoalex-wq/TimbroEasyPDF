@@ -5,6 +5,7 @@ Dipendenze:  pip install pymupdf   (l'OCR usa i file della cartella tessdata,
              l'esportazione in Word usa Microsoft Word installato sul PC)
 """
 
+import array
 import json
 import math
 import os
@@ -20,13 +21,14 @@ import uuid
 from collections import namedtuple
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
+from tkinter import font as tkfont
 
 import pymupdf
 
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -88,16 +90,24 @@ TIMBRO
    su tutte le altre pagine (o solo su quelle selezionate). In un nuovo
    documento usa la posizione dell'ultima volta.
 7. Timbri già apposti: fuori dalla modalità timbro passaci sopra col mouse,
-   trascinali per spostarli; tasto destro o Canc per eliminarli.
+   trascinali per spostarli, doppio clic per modificarli; tasto destro per
+   ruotarli a destra o a sinistra, oppure per eliminarli (anche Canc).
 
 FIRMA
 «Crea firma…»: disegnala con mouse, penna o dito, oppure scrivila con la
 tastiera scegliendo font, dimensione e colore. Viene salvata nella galleria
 e si appone come un timbro.
-«Modifica…» (o doppio clic) riapre la firma con il suo testo o il suo disegno
-e la aggiorna senza crearne un'altra; di un timbro caricato da immagine si
-può sostituire l'immagine, mantenendo nome e impostazioni.
-Le opzioni valgono per i timbri apposti da quel momento in poi.
+
+MODIFICA DEI TIMBRI
+«Modifica…» (o doppio clic nella galleria) apre il timbro, qualunque sia:
+ruotalo a destra o a sinistra, ritoccalo con matita, evidenziatore e gomma,
+aggiungi una scritta con il font che vuoi, oppure aprilo nell'editor di
+immagini di Windows (es. Paint): quando lo salvi lì, si aggiorna da solo.
+Le firme create qui si possono anche riscrivere o ridisegnare; dopo un
+ritocco a mano restano un'immagine. Nome e impostazioni restano gli stessi.
+Le modifiche valgono per i timbri apposti da quel momento in poi; quelli già
+sulla pagina si modificano a uno a uno con doppio clic (o tasto destro).
+I pulsanti ↺ e ↻ ruotano al volo il timbro selezionato nella galleria.
 
 DISPOSIZIONE
 Trascina la maniglia ⋮ di una barra di pulsanti verso un lato della finestra
@@ -140,8 +150,11 @@ TESTO
 • Modifica testo: clicca una riga per correggerla. Il vecchio testo viene
   eliminato davvero e quello nuovo scritto nello stesso punto. Nelle
   scansioni spunta «Copri con il bianco lo sfondo».
-• Aggiungi testo: clicca dove vuoi scrivere. Le caselle si spostano
-  trascinandole, doppio clic per correggerle, Canc per eliminarle.
+• Aggiungi testo: clicca dove vuoi scrivere. Mentre scrivi il testo si vede
+  già sulla pagina, con il font, la dimensione e il colore scelti. Le caselle
+  si spostano trascinandole, doppio clic per correggerle, Canc per eliminarle.
+• Le finestre per aprire, salvare, esportare e scegliere le immagini dei
+  timbri ripartono ognuna dall'ultima cartella usata per quell'operazione.
 • Bianchetto / Oscura: trascina un rettangolo; quanto c'è sotto viene
   cancellato davvero (i timbri restano: si eliminano a parte).
 • OCR: riconosce il testo delle scansioni e lo aggiunge invisibile sopra la
@@ -179,9 +192,35 @@ def place_dialog(top, parent):
     top.grab_set()
 
 
+def keep_clear(top, area):
+    """Sposta la finestra di dialogo perché non copra area (x0, y0, x1, y1 sullo schermo), es. un'anteprima."""
+    top.update_idletasks()
+    match = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", top.geometry())
+    if not match:
+        return
+    w, h, x, y = map(int, match.groups())
+    h += 40                                   # barra del titolo
+    x0, y0, x1, y1 = area
+    if x + w < x0 or x > x1 or y + h < y0 or y > y1:
+        return
+    sw, sh, gap = top.winfo_screenwidth(), top.winfo_screenheight() - 40, 20
+    for nx, ny in ((x, y1 + gap), (x, y0 - gap - h), (x1 + gap, y), (x0 - gap - w, y)):
+        if nx >= 0 and ny >= 0 and nx + w <= sw and ny + h <= sh:
+            top.geometry(f"+{round(nx)}+{round(ny)}")
+            return
+
+
 def photo_from_pixmap(pix):
     """Converte un Pixmap in immagine Tk (PNG se ha trasparenza, altrimenti PPM che è più veloce)."""
     return tk.PhotoImage(data=pix.tobytes("png" if pix.alpha else "ppm"))
+
+
+def draw_checker(c, x0, y0, x1, y1, n=10, tags=()):
+    """Scacchiera grigio chiaro: rende visibili le parti trasparenti di un'immagine."""
+    x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
+    for y in range(y0, y1, n):
+        for x in range(x0 + n * ((y - y0) // n % 2), x1, 2 * n):
+            c.create_rectangle(x, y, min(x + n, x1), min(y + n, y1), fill="#e9e9ee", outline="", tags=tags)
 
 
 def icon_pixmap(size=64):
@@ -539,10 +578,548 @@ class SignatureDialog:
         self.top.destroy()
 
 
+# ---------------------------------------------------------------- ritocco dei timbri
+EDIT_TOOLS = (("pencil", "✎ Matita"), ("highlight", "▬ Evidenziatore"), ("eraser", "◌ Gomma"), ("text", "T  Testo"))
+EDIT_HINTS = {
+    "pencil": "Matita: disegna tenendo premuto il tasto sinistro del mouse.",
+    "highlight": "Evidenziatore: passa sopra tenendo premuto il tasto; il colore è semitrasparente.",
+    "eraser": "Gomma: quello su cui passi diventa trasparente (bianco, se il timbro toglie lo sfondo bianco).",
+    "text": "Testo: clicca dove deve iniziare la scritta, poi scegli font, dimensione e colore.",
+}
+EDIT_COLORS = {"pencil": "#1f3a93", "highlight": "#ffd600", "text": "#111111"}
+EDIT_SWATCHES = ("#111111", "#1f3a93", "#b3261e", "#2e7d32", "#ffd600")
+BRUSH_PT = {"pencil": 0.35, "highlight": 1.6, "eraser": 1.2}   # spessore in punti per ogni tacca del cursore
+HIGHLIGHT_OPACITY = 0.4
+EDIT_UNDO = 20
+
+
+def stamp_pixmap(pix):
+    """Immagine pronta per un timbro: RGB (con o senza trasparenza), lato massimo MAX_STAMP_PX."""
+    if pix.colorspace is None or pix.colorspace.n != 3:
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+    longest = max(pix.width, pix.height)
+    if longest > MAX_STAMP_PX:
+        f = MAX_STAMP_PX / longest
+        pix = pymupdf.Pixmap(pix, round(pix.width * f), round(pix.height * f))
+    return pix
+
+
+def rotate_pixmap(pix, angle):
+    """L'immagine ruotata di un multiplo di 90° in senso orario (negativo: antiorario), senza perdite."""
+    angle %= 360
+    if not angle:
+        return pix
+    if pix.n not in (1, 4):   # RGB: si aggiunge l'alpha, così ogni pixel occupa 4 byte e si sposta in blocco
+        return pymupdf.Pixmap(rotate_pixmap(pymupdf.Pixmap(pix, 1), angle), 0)
+    w, h = pix.width, pix.height
+    a = array.array("I" if pix.n == 4 else "B")
+    a.frombytes(pix.samples)
+    if angle == 180:
+        out = a[::-1]
+    else:
+        out = array.array(a.typecode)
+        for x in range(w) if angle == 90 else range(w - 1, -1, -1):
+            column = a[x::w]                      # dall'alto in basso
+            out.extend(column[::-1] if angle == 90 else column)
+        w, h = h, w
+    return pymupdf.Pixmap(pix.colorspace or pymupdf.csGRAY, w, h, out.tobytes(), pix.alpha)
+
+
+def split_alpha(pix):
+    """(colori, trasparenza): l'immagine RGB senza alpha e la maschera grigia (None se è opaca).
+
+    MuPDF tiene i colori già moltiplicati per l'alpha: qui tornano ai valori veri, così ritoccando
+    l'immagine i bordi sfumati non si scuriscono.
+    """
+    if not pix.alpha:
+        return pix, None
+    alpha = pymupdf.Pixmap(None, pix).samples
+    rgb = bytearray(pymupdf.Pixmap(pix, 0).samples)
+    for m in re.finditer(rb"\x00+", alpha):       # trasparente: il colore non conta, meglio bianco
+        rgb[3 * m.start():3 * m.end()] = b"\xff" * (3 * (m.end() - m.start()))
+    for m in re.finditer(rb"[\x01-\xfe]", alpha):
+        i, a = m.start(), alpha[m.start()]
+        rgb[3 * i:3 * i + 3] = bytes(min(255, (v * 255 + a // 2) // a) for v in rgb[3 * i:3 * i + 3])
+    return (pymupdf.Pixmap(pymupdf.csRGB, pix.width, pix.height, bytes(rgb), False),
+            pymupdf.Pixmap(pymupdf.csGRAY, pix.width, pix.height, alpha, False))
+
+
+def join_alpha(colors, mask):
+    """Il contrario di split_alpha: senza maschera (o se è tutta opaca) l'immagine resta senza alpha."""
+    if mask is None or mask.samples.count(255) == len(mask.samples):
+        return colors
+    return pymupdf.Pixmap(colors, mask)
+
+
+def opaque_mask(pix):
+    return pymupdf.Pixmap(pymupdf.csGRAY, pix.width, pix.height, b"\xff" * (pix.width * pix.height), False)
+
+
+def paint(pix, draw):
+    """Disegna sull'immagine (senza alpha) con draw(page): la pagina è grande come l'immagine, 1 punto = 1 pixel."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=pix.width, height=pix.height)
+    page.insert_image(page.rect, pixmap=pix)
+    draw(page)
+    return page.get_pixmap(colorspace=pix.colorspace, alpha=False)
+
+
+def stroke_drawer(points, color, width, opacity=1.0):
+    """Un tratto a mano libera (punti in pixel dell'immagine), con le estremità arrotondate."""
+    def draw(page):
+        shape = page.new_shape()
+        shape.draw_polyline(points if len(points) > 1 else points + [(points[0][0] + 0.3, points[0][1])])
+        shape.finish(color=color, width=width, closePath=False, lineCap=1, lineJoin=1, stroke_opacity=opacity)
+        shape.commit()
+    return draw
+
+
+def text_drawer(x, y, params, fontfile, scale, color):
+    """Testo con l'angolo in alto a sinistra in (x, y); scale: pixel dell'immagine per punto di carattere."""
+    size = params["size"] * scale
+    ascender = text_font(fontfile).ascender
+
+    def draw(page):
+        page.insert_text((x, y + ascender * size), params["text"], fontsize=size, lineheight=LINE_HEIGHT,
+                         fontname="F0" if fontfile else "helv", fontfile=fontfile, color=color)
+    return draw
+
+
+def without_white(pix, tolerance):
+    """Come Stamp.process: lo sfondo bianco diventa trasparente (senza cache: per le anteprime)."""
+    flat = flatten_on_white(pix)
+    s = flat.samples
+    out = pymupdf.Pixmap(flat, 1)
+    out.set_alpha(bytes(map(min, s[0::3], s[1::3], s[2::3])).translate(white_lut(tolerance)))
+    return out
+
+
+class StampEditor:
+    """Ritocco di un timbro: ruota, matita, evidenziatore, gomma e testo, oppure l'editor di immagini di Windows.
+
+    original è l'immagine di partenza e rotation la rotazione (gradi in senso orario) con cui la si
+    vede. Le firme create nel programma (source) si possono anche riscrivere o ridisegnare finché non
+    si ritocca l'immagine a mano; il disegno rifatto si ruota di source_rotation.
+    remove_white None nasconde l'opzione dello sfondo (timbri già apposti: l'immagine è quella finale).
+    result: None se non è cambiato niente, altrimenti dict con image (l'immagine finale, ruotata),
+    original (None se ritoccata a mano), rotation, width_mm, source, remove_white, name.
+    """
+
+    def __init__(self, parent, fonts, original, width_mm, title, name=None, rotation=0, source=None,
+                 source_rotation=0, remove_white=None, tolerance=10):
+        self.result = None
+        self.fonts = fonts
+        self.original = stamp_pixmap(original)
+        self.rotation = rotation % 360
+        self.width_mm = width_mm
+        self.source, self.source_rotation = source, source_rotation
+        self.edited = False            # pixel ritoccati: la firma non si ricrea più dal suo testo o disegno
+        self.changed = False
+        self.tolerance = tolerance
+        self.colors, self.mask = split_alpha(rotate_pixmap(self.original, self.rotation))
+        self.undo_stack, self.redo_stack = [], []
+        self.tool_colors = dict(EDIT_COLORS)
+        self.text_style = {"font": "Arial" if "Arial" in fonts else next(iter(sorted(fonts)), "Helvetica"),
+                           "size": 10.0}
+        self.stroke = None
+        self.f, self.ox, self.oy, self._geometry = 1.0, 0, 0, None
+        self._photo = self._text_photo = None
+        self._ext, self._ext_job = None, None
+        self._initial = (name, bool(remove_white))
+        s = parent.winfo_fpixels("1i") / 96
+        self.CW, self.CH = round(720 * s), round(360 * s)
+
+        top = self.top = tk.Toplevel(parent)
+        top.title(title)
+        top.transient(parent)
+        top.resizable(False, False)
+        body = ttk.Frame(top, padding=10)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        bar = ttk.Frame(body)
+        bar.pack(fill=tk.X)
+        ttk.Button(bar, text="↺ Ruota a sinistra", command=lambda: self.rotate(-90)).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Ruota a destra ↻", command=lambda: self.rotate(90)).pack(side=tk.LEFT, padx=(4, 14))
+        self.tool_var = tk.StringVar(value="pencil")
+        for key, label in EDIT_TOOLS:
+            ttk.Radiobutton(bar, text=label, value=key, variable=self.tool_var, style="Toolbutton",
+                            command=self._tool_changed).pack(side=tk.LEFT, padx=1, ipadx=4)
+        ttk.Button(bar, text="Ripristina ↷", command=self.redo).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="↶ Annulla", command=self.undo).pack(side=tk.RIGHT, padx=4)
+
+        row = ttk.Frame(body)
+        row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(row, text="Colore:").pack(side=tk.LEFT)
+        self.swatch = tk.Label(row, width=3, relief=tk.SOLID, bd=1, cursor="hand2")
+        self.swatch.pack(side=tk.LEFT, padx=(6, 8))
+        self.swatch.bind("<Button-1>", lambda e: self._pick_color())
+        for color in EDIT_SWATCHES:
+            chip = tk.Label(row, width=2, bg=color, relief=tk.RAISED, bd=1, cursor="hand2")
+            chip.pack(side=tk.LEFT, padx=1)
+            chip.bind("<Button-1>", lambda e, c=color: self._set_color(c))
+        ttk.Label(row, text="Spessore:").pack(side=tk.LEFT, padx=(18, 0))
+        self.size_scale = ttk.Scale(row, from_=1, to=10, length=round(150 * s))
+        self.size_scale.set(3)
+        self.size_scale.pack(side=tk.LEFT, padx=(6, 0))
+        self.size_label = ttk.Label(row, foreground="#555")
+        self.size_label.pack(side=tk.RIGHT)
+
+        self.canvas = tk.Canvas(body, width=self.CW, height=self.CH, bg="white", highlightthickness=1,
+                                highlightbackground="#b8b8c0")
+        self.canvas.pack(pady=(8, 0))
+        for seq, fn in (("<Button-1>", self._press), ("<B1-Motion>", self._drag), ("<ButtonRelease-1>", self._release),
+                        ("<Motion>", self._hover), ("<Leave>", lambda e: self.canvas.delete("brush"))):
+            self.canvas.bind(seq, fn)
+        self.hint = ttk.Label(body, foreground="#555")
+        self.hint.pack(anchor="w", pady=(4, 0))
+        self.note = ttk.Label(body, foreground="#a15c00", wraplength=self.CW, justify=tk.LEFT)
+        self.note.pack(anchor="w")
+
+        row = ttk.Frame(body)
+        row.pack(fill=tk.X, pady=(8, 0))
+        self.source_btn = None
+        if source:
+            self.source_btn = ttk.Button(row, command=self._edit_source,
+                                         text="Modifica il testo della firma…" if source["kind"] == "typed"
+                                         else "Ridisegna la firma…")
+            self.source_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(row, text="Apri con l'editor di immagini…", command=self._open_external).pack(side=tk.LEFT)
+        ttk.Button(row, text="Sostituisci immagine…", command=self._replace).pack(side=tk.LEFT, padx=6)
+        self.white_var = tk.BooleanVar(value=bool(remove_white))
+        if remove_white is not None:
+            ttk.Checkbutton(row, text="Rimuovi sfondo bianco", variable=self.white_var,
+                            command=self._redraw).pack(side=tk.RIGHT)
+
+        bottom = ttk.Frame(body)
+        bottom.pack(fill=tk.X, pady=(12, 0))
+        self.name_var = tk.StringVar(value=name or "")
+        if name is not None:
+            ttk.Label(bottom, text="Nome nella galleria:").pack(side=tk.LEFT)
+            ttk.Entry(bottom, textvariable=self.name_var, width=24).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(bottom, text="Chiudi senza salvare", command=self._close).pack(side=tk.RIGHT)
+        ttk.Button(bottom, text="Salva", command=self._save).pack(side=tk.RIGHT, padx=6)
+
+        top.bind("<Control-z>", lambda e: self.undo())
+        top.bind("<Control-y>", lambda e: self.redo())
+        top.bind("<Escape>", lambda e: self._close())
+        top.protocol("WM_DELETE_WINDOW", self._close)
+        top.bind("<Destroy>", self._on_destroy)
+        self._tool_changed()
+        self._redraw()
+        place_dialog(top, parent)
+
+    # ------------------------------------------------------------ stato e annulla
+    @property
+    def tool(self):
+        return self.tool_var.get()
+
+    def _state(self):
+        return self.colors, self.mask, self.rotation, self.width_mm, self.edited, self.original, self.source
+
+    def _push(self):
+        self.undo_stack = self.undo_stack[-(EDIT_UNDO - 1):] + [self._state()]
+        self.redo_stack.clear()
+
+    def _restore(self, state):
+        self.colors, self.mask, self.rotation, self.width_mm, self.edited, self.original, self.source = state
+        self._after_change()
+
+    def undo(self):
+        if self.undo_stack:
+            self.redo_stack.append(self._state())
+            self._restore(self.undo_stack.pop())
+
+    def redo(self):
+        if self.redo_stack:
+            self.undo_stack.append(self._state())
+            self._restore(self.redo_stack.pop())
+
+    def _after_change(self):
+        self.changed = True
+        if self.source_btn:
+            self.source_btn.state(["disabled"] if self.edited else ["!disabled"])
+        self.note.configure(text="La firma ora è un'immagine ritoccata: il testo (o il disegno) non si può più "
+                                 "modificare come prima. Annulla (Ctrl+Z) per tornare indietro."
+                            if self.edited and self.source else "")
+        self._redraw()
+
+    def _pixels_changed(self):
+        self.edited = True
+        self._after_change()
+
+    # ------------------------------------------------------------ vista
+    def _px_per_pt(self):
+        return self.colors.width / (self.width_mm * MM)
+
+    def _brush_px(self):
+        return max(1.0, float(self.size_scale.get()) * BRUSH_PT.get(self.tool, 1) * self._px_per_pt())
+
+    def _to_image(self, x, y):
+        return (x - self.ox) / self.f, (y - self.oy) / self.f
+
+    def _redraw(self):
+        c = self.canvas
+        pix = join_alpha(self.colors, self.mask)
+        w, h = pix.width, pix.height
+        self.f = min((self.CW - 24) / w, (self.CH - 24) / h, 4)
+        dw, dh = max(1, round(w * self.f)), max(1, round(h * self.f))
+        self.ox, self.oy = (self.CW - dw) // 2, (self.CH - dh) // 2
+        if self._geometry != (dw, dh):   # la scacchiera si ridisegna solo se cambia il riquadro
+            self._geometry = (dw, dh)
+            c.delete("checker")
+            draw_checker(c, self.ox, self.oy, self.ox + dw, self.oy + dh, tags="checker")
+        small = pymupdf.Pixmap(pix, dw, dh)
+        if self.white_var.get():
+            small = without_white(small, self.tolerance)
+        self._photo = photo_from_pixmap(small)
+        c.delete("image", "frame")
+        c.create_image(self.ox, self.oy, anchor="nw", image=self._photo, tags="image")
+        c.create_rectangle(self.ox - 1, self.oy - 1, self.ox + dw, self.oy + dh, outline="#c8c8d0", tags="frame")
+        c.tag_raise("brush")
+        self.size_label.configure(text=f"Nel PDF: {self.width_mm:.0f} × {self.width_mm * h / w:.0f} mm")
+
+    def _tool_changed(self):
+        self.hint.configure(text=EDIT_HINTS[self.tool])
+        color = self.tool_colors.get(self.tool)
+        self.swatch.configure(bg=color or "#ffffff", text="" if color else "—")
+        self.canvas.configure(cursor="xterm" if self.tool == "text" else "crosshair")
+        self.canvas.delete("brush")
+
+    def _set_color(self, color):
+        if self.tool in self.tool_colors:
+            self.tool_colors[self.tool] = color
+            self.swatch.configure(bg=color)
+
+    def _pick_color(self):
+        if self.tool in self.tool_colors:
+            color = colorchooser.askcolor(color=self.tool_colors[self.tool], parent=self.top, title="Colore")[1]
+            self.top.grab_set()
+            if color:
+                self._set_color(color)
+
+    def _hover(self, event):
+        self.canvas.delete("brush")
+        if self.tool != "text":
+            r = self._brush_px() * self.f / 2
+            self.canvas.create_oval(event.x - r, event.y - r, event.x + r, event.y + r, outline="#555",
+                                    dash=(2, 2), tags="brush")
+
+    # ------------------------------------------------------------ disegno
+    def _press(self, event):
+        if self.tool == "text":
+            self._add_text(event.x, event.y)
+            return
+        self.stroke = [self._to_image(event.x, event.y)]
+        color = "#d8d8de" if self.tool == "eraser" else self.tool_colors[self.tool]
+        self._line = self.canvas.create_line(event.x, event.y, event.x + 0.5, event.y, fill=color,
+                                             width=self._brush_px() * self.f, capstyle=tk.ROUND,
+                                             joinstyle=tk.ROUND, tags="stroke",
+                                             stipple="gray50" if self.tool == "highlight" else "")
+
+    def _drag(self, event):
+        self._hover(event)
+        if not self.stroke:
+            return
+        x, y = self._to_image(event.x, event.y)
+        lx, ly = self.stroke[-1]
+        if (x - lx) ** 2 + (y - ly) ** 2 < (1.5 / self.f) ** 2:
+            return
+        self.stroke.append((x, y))
+        self.canvas.coords(self._line, *[v for px, py in self.stroke
+                                         for v in (self.ox + px * self.f, self.oy + py * self.f)])
+
+    def _release(self, _event):
+        points, self.stroke = self.stroke, None
+        self.canvas.delete("stroke")
+        if not points:
+            return
+        width = self._brush_px()
+        self._push()
+        if self.tool == "eraser":
+            self.mask = paint(self.mask or opaque_mask(self.colors), stroke_drawer(points, (0, 0, 0), width))
+            self.colors = paint(self.colors, stroke_drawer(points, (1, 1, 1), width))
+        else:
+            opacity = HIGHLIGHT_OPACITY if self.tool == "highlight" else 1.0
+            self.colors = paint(self.colors, stroke_drawer(points, hex_to_rgb(self.tool_colors[self.tool]), width,
+                                                           opacity))
+            if self.mask is not None:
+                self.mask = paint(self.mask, stroke_drawer(points, (1, 1, 1), width, opacity))
+        self._pixels_changed()
+
+    def _add_text(self, x, y):
+        ix, iy = self._to_image(x, y)
+        if not (0 <= ix <= self.colors.width and 0 <= iy <= self.colors.height):
+            return
+        scale = self._px_per_pt()
+
+        def preview(params):
+            self.canvas.delete("textpreview")
+            if not params:
+                return
+            doc = pymupdf.open()
+            page = doc.new_page(width=self.colors.width, height=self.colors.height)
+            text_drawer(ix, iy, params, self.fonts.get(params["font"]), scale, hex_to_rgb(params["color"]))(page)
+            self._text_photo = photo_from_pixmap(page.get_pixmap(matrix=pymupdf.Matrix(self.f, self.f), alpha=True))
+            self.canvas.create_image(self.ox, self.oy, anchor="nw", image=self._text_photo, tags="textpreview")
+
+        dialog = TextDialog(self.top, self.fonts, "Testo sul timbro",
+                            dict(self.text_style, text="", color=self.tool_colors["text"]), preview=preview)
+        c = self.canvas
+        keep_clear(dialog.top, (c.winfo_rootx(), c.winfo_rooty(), c.winfo_rootx() + self.CW,
+                                c.winfo_rooty() + self.CH))
+        self.top.wait_window(dialog.top)
+        self.top.grab_set()
+        self.canvas.delete("textpreview")
+        r = dialog.result
+        if not r:
+            return
+        self.text_style = {"font": r["font"], "size": r["size"]}
+        self.tool_colors["text"] = r["color"]
+        self._tool_changed()
+        fontfile = self.fonts.get(r["font"])
+        self._push()
+        self.colors = paint(self.colors, text_drawer(ix, iy, r, fontfile, scale, hex_to_rgb(r["color"])))
+        if self.mask is not None:
+            self.mask = paint(self.mask, text_drawer(ix, iy, r, fontfile, scale, (1, 1, 1)))
+        self._pixels_changed()
+
+    def rotate(self, angle):
+        self._push()
+        w, h = self.colors.width, self.colors.height
+        self.colors = rotate_pixmap(self.colors, angle)
+        if self.mask is not None:
+            self.mask = rotate_pixmap(self.mask, angle)
+        self.rotation = (self.rotation + angle) % 360
+        if angle % 180:   # la larghezza nel PDF diventa l'altezza di prima: le misure vere non cambiano
+            self.width_mm = self.width_mm * h / w
+        self._after_change()
+
+    # ------------------------------------------------------------ immagini nuove
+    def _edit_source(self):
+        """Riapre la firma con il suo testo o il suo disegno; quella rifatta resta alla stessa scala."""
+        if self.edited:
+            return
+        dialog = SignatureDialog(self.top, source=self.source, name=self.name_var.get().strip() or "Firma")
+        self.top.wait_window(dialog.top)
+        self.top.grab_set()
+        if not dialog.result:
+            return
+        pix, name, _width, source = dialog.result
+        mm_per_px = self.width_mm / self.colors.width
+        turned = (self.source_rotation + self.rotation) % 180
+        self._push()
+        self.original = rotate_pixmap(stamp_pixmap(pix), self.source_rotation)
+        self.source = source
+        self.colors, self.mask = split_alpha(rotate_pixmap(self.original, self.rotation))
+        self.width_mm = min(max((pix.height if turned else pix.width) * mm_per_px, 3), 600)
+        if self._initial[0] is not None:
+            self.name_var.set(name)
+        self._after_change()
+
+    def _load_image(self, pix, keep_scale):
+        """Mette un'immagine nuova al posto di quella attuale: keep_scale conserva i mm per pixel
+        (es. ritagliata nell'editor esterno), altrimenti la larghezza nel PDF."""
+        mm_per_px = self.width_mm / self.colors.width
+        had_alpha = self.mask is not None
+        self._push()
+        self.colors, self.mask = split_alpha(stamp_pixmap(pix))
+        if keep_scale:
+            self.width_mm = min(max(self.colors.width * mm_per_px, 3), 600)
+        if had_alpha and self.mask is None and self._initial[0] is not None and not self.white_var.get():
+            self.white_var.set(True)   # l'editor ha perso la trasparenza: il bianco si toglie qui
+        self._pixels_changed()
+
+    def _replace(self):
+        path = filedialog.askopenfilename(parent=self.top, title="Nuova immagine del timbro",
+                                          initialdir=self.image_dir(), filetypes=IMAGE_TYPES)
+        self.top.grab_set()
+        if not path:
+            return
+        try:
+            pix = pymupdf.Pixmap(path)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile aprire l'immagine:\n{exc}", parent=self.top)
+            return
+        StampEditor.last_image_dir = str(Path(path).parent)
+        self._load_image(pix, keep_scale=False)
+
+    last_image_dir = None   # cartella delle immagini: la imposta e la legge il programma (cartelle ricordate)
+
+    @classmethod
+    def image_dir(cls):
+        return cls.last_image_dir or str(Path.home())
+
+    def _open_external(self):
+        """Apre l'immagine nell'editor di Windows (di solito Paint); quando la si salva lì, qui si aggiorna."""
+        folder = Path(tempfile.gettempdir()) / APP_NAME
+        folder.mkdir(exist_ok=True)
+        name = re.sub(r'[\\/:*?"<>|]+', "_", self.name_var.get().strip()) or "timbro"
+        path = folder / f"{name}.png"
+        try:
+            join_alpha(self.colors, self.mask).save(str(path))
+            mtime = path.stat().st_mtime
+            try:
+                os.startfile(str(path), "edit")
+            except OSError:
+                os.startfile(str(path))
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile aprire l'editor di immagini:\n{exc}", parent=self.top)
+            return
+        self._ext = {"path": path, "seen": mtime, "loaded": mtime}
+        self.note.configure(text=f"Immagine aperta nell'editor di immagini ({path.name}): modificala e salvala "
+                                 "lì (Ctrl+S); qui si aggiorna da sola. Poi premi «Salva».")
+        if not self._ext_job:
+            self._watch_external()
+
+    def _watch_external(self):
+        ext = self._ext
+        try:
+            mtime = ext["path"].stat().st_mtime
+        except OSError:
+            mtime = ext["seen"]
+        if mtime != ext["seen"]:          # appena cambiato: si aspetta che l'editor finisca di scriverlo
+            ext["seen"] = mtime
+        elif mtime != ext["loaded"]:
+            try:
+                pix = pymupdf.Pixmap(str(ext["path"]))
+            except Exception:
+                pix = None
+            if pix is not None:
+                ext["loaded"] = mtime
+                self._load_image(pix, keep_scale=True)
+        self._ext_job = self.top.after(700, self._watch_external)
+
+    # ------------------------------------------------------------ chiusura
+    def _on_destroy(self, event):
+        if event.widget is self.top and self._ext_job:
+            self.top.after_cancel(self._ext_job)
+            self._ext_job = None
+
+    def _close(self):
+        name, white = self._initial
+        if (self.changed or self.name_var.get().strip() != (name or "").strip() or self.white_var.get() != white) \
+                and not messagebox.askyesno(APP_NAME, "Chiudere senza salvare le modifiche al timbro?",
+                                            parent=self.top):
+            return
+        self.top.destroy()
+
+    def _save(self):
+        name, white = self._initial
+        new_name = self.name_var.get().strip() or name
+        if self.changed or new_name != name or self.white_var.get() != white:
+            self.result = {"image": join_alpha(self.colors, self.mask),
+                           "original": None if self.edited else self.original, "rotation": self.rotation,
+                           "width_mm": round(self.width_mm, 1), "source": None if self.edited else self.source,
+                           "remove_white": self.white_var.get(), "name": new_name}
+        self.top.destroy()
+
+
 # ---------------------------------------------------------------- timbri già apposti
 # Ogni timbro è uno stream a sé ("q <matrice> cm /<nome> Do Q") e la sua immagine porta la
 # chiave STAMP_KEY: così i timbri si riconoscono anche dopo il salvataggio e la riapertura.
 STAMP_KEY = "TimbroPDF"   # segni interni nei PDF: restano uguali anche col nome nuovo del programma
+# nell'immagine di una firma creata nel programma: il suo testo (o disegno) e la rotazione già applicata
+SOURCE_KEY = "TimbroPDFFirma"
 STAMP_STREAM = re.compile(rb"^\s*q\s+((?:\S+\s+){6})cm\s+/(\S+)\s+Do\s+Q\s*$")
 PlacedStamp = namedtuple("PlacedStamp", "index cm name rect")  # rect: pagina come la si vede
 
@@ -573,24 +1150,98 @@ def remove_placed_stamp(page, stamp):
     set_contents(page, xrefs)
 
 
-def move_placed_stamp(page, stamp, dx, dy):
-    """Sposta il timbro di (dx, dy) punti nella pagina come la si vede.
+def _restamp(page, stamp, cm):
+    """Ridisegna il timbro con un'altra matrice.
 
     Si crea uno stream nuovo invece di modificare quello esistente: dopo il salvataggio
     timbri identici su pagine diverse possono condividere lo stesso stream.
     """
     doc = page.parent
-    to_pdf = ~(page.transformation_matrix * page.rotation_matrix)
-    delta = pymupdf.Point(dx, dy) * to_pdf - pymupdf.Point(0, 0) * to_pdf
-    cm = pymupdf.Matrix(stamp.cm)
-    cm.e += delta.x
-    cm.f += delta.y
     xref = doc.get_new_xref()
     doc.update_object(xref, "<<>>")
     numbers = " ".join(f"{v:.4f}" for v in (cm.a, cm.b, cm.c, cm.d, cm.e, cm.f))
     doc.update_stream(xref, f"\nq\n{numbers} cm\n/{stamp.name} Do\nQ\n".encode())
     xrefs = page.get_contents()
     xrefs[stamp.index] = xref
+    set_contents(page, xrefs)
+
+
+def move_placed_stamp(page, stamp, dx, dy):
+    """Sposta il timbro di (dx, dy) punti nella pagina come la si vede."""
+    to_pdf = ~(page.transformation_matrix * page.rotation_matrix)
+    delta = pymupdf.Point(dx, dy) * to_pdf - pymupdf.Point(0, 0) * to_pdf
+    cm = pymupdf.Matrix(stamp.cm)
+    cm.e += delta.x
+    cm.f += delta.y
+    _restamp(page, stamp, cm)
+
+
+def rotate_placed_stamp(page, stamp, angle):
+    """Ruota il timbro attorno al suo centro, di angle gradi in senso orario come lo si vede (multipli di 90)."""
+    c = pymupdf.Point(0.5, 0.5) * stamp.cm
+    turn = pymupdf.Matrix(-angle)   # nello spazio del PDF l'asse y va in su: l'orario è negativo
+    turn = pymupdf.Matrix(*(round(v) for v in (turn.a, turn.b, turn.c, turn.d)), 0, 0)
+    to_center, back = pymupdf.Matrix(1, 0, 0, 1, -c.x, -c.y), pymupdf.Matrix(1, 0, 0, 1, c.x, c.y)
+    _restamp(page, stamp, stamp.cm * to_center * turn * back)
+
+
+def stamp_view_angle(page, stamp):
+    """Di quanti gradi, in senso orario, l'immagine del timbro appare ruotata nella pagina vista."""
+    m = stamp.cm * page.transformation_matrix * page.rotation_matrix
+    return round(math.degrees(math.atan2(m.b, m.a)) / 90) * 90 % 360
+
+
+def placed_stamp_image(page, stamp):
+    """(immagine del timbro apposto, con la sua trasparenza; xref dell'immagine)."""
+    doc = page.parent
+    xref, smask = next((img[0], img[1]) for img in page.get_images(full=True) if img[7] == stamp.name)
+    pix = pymupdf.Pixmap(doc, xref)
+    if pix.colorspace is None or pix.colorspace.n != 3:
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+    if smask and not pix.alpha:
+        pix = pymupdf.Pixmap(pix, pymupdf.Pixmap(doc, smask))
+    return pix, xref
+
+
+def mark_stamp_image(doc, xref, source=None, rotate=0):
+    """Segna l'immagine come timbro; per le firme create nel programma ricorda come rifarle."""
+    doc.xref_set_key(xref, STAMP_KEY, "true")
+    if source:
+        doc.xref_set_key(xref, SOURCE_KEY, pymupdf.get_pdf_str(json.dumps({"source": source, "rotate": rotate},
+                                                                           ensure_ascii=False)))
+
+
+def stamp_source(doc, xref):
+    """(source, rotazione) della firma salvati nell'immagine di un timbro apposto, oppure None."""
+    kind, value = doc.xref_get_key(xref, SOURCE_KEY)
+    if kind != "string":
+        return None
+    try:
+        data = json.loads(value)
+        return data["source"], int(data.get("rotate", 0))
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def replace_placed_stamp(page, stamp, pix, width_mm, source=None, rotate=0):
+    """Mette un'immagine nuova al posto del timbro apposto: stesso centro e stesso posto nell'ordine di
+    disegno (primo o secondo piano); l'immagine appare diritta, come nella finestra di modifica."""
+    doc = page.parent
+    r = stamp.rect
+    cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+    w = width_mm * MM
+    h = w * pix.height / pix.width
+    rect = pymupdf.Rect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2) * page.derotation_matrix
+    rect.normalize()
+    before = page.get_contents()
+    old = before[stamp.index]
+    xref = page.insert_image(rect, stream=pix.tobytes("png"), rotate=page.rotation)
+    mark_stamp_image(doc, xref, source, rotate)
+    name = next(img[7] for img in page.get_images(full=True) if img[0] == xref)
+    new = next(x for x in page.get_contents() if x not in before
+               and (m := STAMP_STREAM.match(doc.xref_stream(x) or b"")) and m.group(2).decode() == name)
+    xrefs = [x for x in page.get_contents() if x != new]
+    xrefs[xrefs.index(old)] = new
     set_contents(page, xrefs)
 
 
@@ -925,15 +1576,51 @@ def pdf_to_docx(pdf, docx, timeout=900):
     return None
 
 
+_TK_FAMILIES = None
+
+
+def tk_font_style(name, widget):
+    """(famiglia, peso, stile) di Tk per un font installato: «Arial Bold Italic» -> Arial, bold, italic."""
+    global _TK_FAMILIES
+    if _TK_FAMILIES is None:
+        _TK_FAMILIES = set(tkfont.families(widget))
+    for suffix, weight, slant in (("", "normal", "roman"), (" Bold Italic", "bold", "italic"),
+                                  (" Bold Oblique", "bold", "italic"), (" Bold", "bold", "roman"),
+                                  (" Italic", "normal", "italic"), (" Oblique", "normal", "italic")):
+        base = name[:len(name) - len(suffix)] if suffix else name
+        if name.endswith(suffix) and base in _TK_FAMILIES:
+            return base, weight, slant
+    return "Segoe UI", "normal", "roman"
+
+
+def text_preview(page, params, fontfile, zoom):
+    """La casella di testo disegnata da sola, su fondo trasparente, come apparirà sulla pagina:
+    (pixmap, riquadro nella pagina vista)."""
+    box = text_box_rect(params, text_font(fontfile)) * page.rotation_matrix
+    doc = pymupdf.open()
+    tmp = doc.new_page(width=page.cropbox.width, height=page.cropbox.height)
+    tmp.set_rotation(page.rotation)
+    tmp.insert_text(params["origin"], params["text"], fontsize=params["size"], lineheight=LINE_HEIGHT,
+                    fontname="F0" if fontfile else "helv", fontfile=fontfile, color=hex_to_rgb(params["color"]),
+                    rotate=params["rotate"])
+    clip = (box + (-2, -2, 2, 2)) & tmp.rect
+    return tmp.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=True), clip
+
+
 class TextDialog:
     """Testo da scrivere sul PDF: contenuto, font, dimensione e colore.
 
     whiteout None nasconde la casella «Copri con il bianco»; True/False la mostra già impostata.
+    preview(dati) riceve a ogni modifica testo, font, dimensione e colore (None quando la finestra si
+    chiude o i dati non sono validi), per mostrare il risultato mentre si scrive.
     """
 
-    def __init__(self, parent, fonts, title, params, original=None, whiteout=None):
+    def __init__(self, parent, fonts, title, params, original=None, whiteout=None, preview=None):
         self.result = None   # dict(text, font, size, color, whiteout)
         self.color = params["color"]
+        self.preview = preview
+        self._job = None
+        s = parent.winfo_fpixels("1i") / 96
         top = self.top = tk.Toplevel(parent)
         top.title(title)
         top.transient(parent)
@@ -942,10 +1629,18 @@ class TextDialog:
         body.pack(fill=tk.BOTH, expand=True)
         if original:
             ttk.Label(body, text=original, foreground="#555").pack(anchor="w", pady=(0, 6))
-        self.text = tk.Text(body, width=58, height=4, font=("Segoe UI", 11), wrap="none", undo=True)
-        self.text.pack(fill=tk.X)
+        # riquadro di misura fissa: il testo si vede con il suo font, la finestra non cambia misura
+        box = tk.Frame(body, width=round(560 * s), height=round(130 * s))
+        box.pack_propagate(False)
+        box.pack(fill=tk.X)
+        self.text = tk.Text(box, font=("Segoe UI", 11), wrap="none", undo=True, padx=6, pady=4)
+        self.text.pack(fill=tk.BOTH, expand=True)
         self.text.insert("1.0", params["text"])
         self.text.tag_add("sel", "1.0", "end-1c")
+        self.text.edit_modified(False)
+        self.text.bind("<<Modified>>", self._on_modified)
+        self.format_note = ttk.Label(body, foreground="#777")
+        self.format_note.pack(anchor="e")
 
         row = ttk.Frame(body)
         row.pack(fill=tk.X, pady=(10, 0))
@@ -984,6 +1679,10 @@ class TextDialog:
         ttk.Button(buttons, text="OK", command=self._ok).pack(side=tk.RIGHT, padx=6)
         top.bind("<Control-Return>", lambda e: self._ok() or "break")
         top.bind("<Escape>", lambda e: top.destroy())
+        top.bind("<Destroy>", self._on_destroy)
+        for var in (self.font_var, self.size_var):
+            var.trace_add("write", self._changed)
+        self._refresh()
         place_dialog(top, parent)
         self.text.focus_set()
 
@@ -996,6 +1695,48 @@ class TextDialog:
     def _set_color(self, color):
         self.color = color
         self.swatch.configure(bg=color)
+        self._changed()
+
+    def _on_modified(self, _event):
+        if self.text.edit_modified():
+            self.text.edit_modified(False)
+            self._changed()
+
+    def _changed(self, *_):
+        if self._job:
+            self.top.after_cancel(self._job)
+        self._job = self.top.after(120, self._refresh)
+
+    def _values(self):
+        """(testo, dimensione): la dimensione è None se non è un numero valido."""
+        text = self.text.get("1.0", "end-1c").replace("\t", "    ").rstrip()
+        try:
+            size = float(self.size_var.get().replace(",", "."))
+        except ValueError:
+            size = None
+        return text, size if size and 4 <= size <= 400 else None
+
+    def _refresh(self):
+        """Il testo nel riquadro prende font, colore e (fin dove ci sta) dimensione scelti; poi l'anteprima."""
+        self._job = None
+        text, size = self._values()
+        family, weight, slant = tk_font_style(self.font_var.get(), self.top)
+        shown = round(min(max(size or 11, 8), 36))
+        light = sum(hex_to_rgb(self.color)) > 2.55   # testo chiaro: su fondo scuro, se no non si vede
+        self.text.configure(font=(family, shown, weight, slant), foreground=self.color,
+                            insertbackground=self.color, background="#5f6368" if light else "white")
+        self.format_note.configure(text="" if not size or shown == round(size) else
+                                   f"Nel riquadro il testo è mostrato a {shown} pt; nel PDF sarà di {size:g} pt.")
+        if self.preview:
+            self.preview({"text": text, "font": self.font_var.get(), "size": size, "color": self.color}
+                         if text.strip() and size else None)
+
+    def _on_destroy(self, event):
+        if event.widget is self.top:
+            if self._job:
+                self.top.after_cancel(self._job)
+            if self.preview:
+                self.preview(None)
 
     def _ok(self):
         text = self.text.get("1.0", "end-1c").replace("\t", "    ").rstrip()
@@ -1940,21 +2681,15 @@ class Stamp:
         self.png = pix.tobytes("png")
         self._photos.clear()
 
-    def import_file(self, source, remove_white, tolerance):
+    def import_file(self, source, remove_white, tolerance, rotate=0):
         """source: percorso di un'immagine oppure un Pixmap già pronto (es. una firma creata nell'app)."""
-        pix = source if isinstance(source, pymupdf.Pixmap) else pymupdf.Pixmap(source)
-        if pix.colorspace is None or pix.colorspace.n != 3:
-            pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
-        longest = max(pix.width, pix.height)
-        if longest > MAX_STAMP_PX:
-            f = MAX_STAMP_PX / longest
-            pix = pymupdf.Pixmap(pix, round(pix.width * f), round(pix.height * f))
+        pix = stamp_pixmap(source if isinstance(source, pymupdf.Pixmap) else pymupdf.Pixmap(source))
         self.original_png = pix.tobytes("png")
         self._original = self._flat = self._darkest = None
-        self.process(remove_white, tolerance)
+        self.process(remove_white, tolerance, rotate)
 
-    def process(self, remove_white, tolerance):
-        """Ricrea l'immagine usata per timbrare partendo dall'originale."""
+    def process(self, remove_white, tolerance, rotate=0):
+        """Ricrea l'immagine usata per timbrare partendo dall'originale (rotate: gradi in senso orario)."""
         if self._original is None:
             self._original = pymupdf.Pixmap(self.original_png)
         if remove_white:
@@ -1966,7 +2701,7 @@ class Stamp:
             pix.set_alpha(self._darkest.translate(white_lut(tolerance)))
         else:
             pix = self._original
-        self._set(pix)
+        self._set(rotate_pixmap(pix, rotate))
 
     def photo(self, width, height):
         """Immagine Tk del timbro alle dimensioni indicate (in pixel), con cache."""
@@ -1991,7 +2726,7 @@ class StampLibrary:
     la password ricordata (cifrata da Windows), il timbro scelto e le ultime posizioni usate.
     """
 
-    DEFAULTS = {"width_mm": 40.0, "remove_white": True, "white_tolerance": 10, "overlay": True,
+    DEFAULTS = {"width_mm": 40.0, "remove_white": True, "white_tolerance": 10, "overlay": True, "rotate": 0,
                 "last_pos": None}
     LOCAL_KEYS = ("last_pos",)   # restano su questo PC, non nell'archivio
 
@@ -2099,7 +2834,7 @@ class StampLibrary:
         """image: percorso o Pixmap; settings può contenere "source", i dati per rimodificare una firma."""
         item = dict(self.DEFAULTS, id=uuid.uuid4().hex[:10], name=name, **settings)
         stamp = Stamp()
-        stamp.import_file(image, item["remove_white"], item["white_tolerance"])
+        stamp.import_file(image, item["remove_white"], item["white_tolerance"], item["rotate"])
         self.items.append(item)
         self.stamps[item["id"]] = stamp
         self.current = item
@@ -2107,15 +2842,35 @@ class StampLibrary:
         self.save()
         return item
 
-    def replace_image(self, item, image):
-        """Nuova immagine per un timbro già salvato: restano id, nome e impostazioni."""
-        self.stamps[item["id"]].import_file(image, item["remove_white"], item["white_tolerance"])
+    def apply_edit(self, item, result):
+        """Salva quanto fatto nella finestra di modifica (StampEditor.result): restano id e impostazioni.
+
+        Se l'immagine è stata solo ruotata o la firma riscritta, si conserva l'immagine diritta e la
+        rotazione a parte, così la firma resta modificabile come testo; se è stata ritoccata a mano,
+        la nuova immagine contiene già la rotazione.
+        """
+        item.update(name=result["name"], width_mm=result["width_mm"], remove_white=result["remove_white"])
+        if result["original"] is None:
+            image, item["rotate"] = result["image"], 0
+            item.pop("source", None)
+        else:
+            image, item["rotate"] = result["original"], result["rotation"]
+            if result["source"]:
+                item["source"] = result["source"]
+        self.stamps[item["id"]].import_file(image, item["remove_white"], item["white_tolerance"], item["rotate"])
         self._version += 1
         self.save()
 
+    def rotate(self, item, angle):
+        """Ruota il timbro di angle gradi in senso orario; le misure vere nel PDF restano quelle."""
+        if angle % 180:
+            item["width_mm"] = round(item["width_mm"] * self.stamps[item["id"]].aspect, 1)
+        item["rotate"] = (item["rotate"] + angle) % 360
+        self.reprocess(item)
+
     def reprocess(self, item):
-        """Rifà l'immagine per timbrare dopo un cambio delle impostazioni dello sfondo."""
-        self.stamps[item["id"]].process(item["remove_white"], item["white_tolerance"])
+        """Rifà l'immagine per timbrare dopo un cambio delle impostazioni dello sfondo o della rotazione."""
+        self.stamps[item["id"]].process(item["remove_white"], item["white_tolerance"], item["rotate"])
         self._version += 1
         self.save()
 
@@ -2945,7 +3700,9 @@ class App:
             row.pack(fill=tk.X, pady=(6 if k == 0 else 4, 0))
         for row, buttons in zip(rows, ((("Aggiungi…", self.cmd_add_stamp), ("Crea firma…", self.cmd_create_signature)),
                                        (("Modifica…", self.cmd_edit_stamp), ("Rinomina…", self.cmd_rename_stamp)),
-                                       (("Elimina", self.cmd_delete_stamp),))):
+                                       (("↺ Ruota", lambda: self.rotate_stamp(-90)),
+                                        ("Ruota ↻", lambda: self.rotate_stamp(90)),
+                                        ("Elimina", self.cmd_delete_stamp)))):
             for k, (text, cmd) in enumerate(buttons):
                 ttk.Button(row, text=text, command=cmd).pack(side=tk.LEFT, expand=True, fill=tk.X,
                                                              padx=(4 if k else 0, 0))
@@ -3004,8 +3761,8 @@ class App:
             "Ogni timbro ricorda le sue impostazioni.\n\n"
             "In modalità timbro clicca sul foglio per apporlo; cambia pagina e clicca di nuovo dove vuoi. "
             "Esc esce dalla modalità.\n\n"
-            "Fuori dalla modalità timbro trascina un timbro già apposto per spostarlo; "
-            "tasto destro o Canc per eliminarlo. Ctrl+Z annulla.\n\n"
+            "Fuori dalla modalità timbro trascina un timbro già apposto per spostarlo, doppio clic per "
+            "modificarlo; tasto destro per ruotarlo o eliminarlo (anche Canc). Ctrl+Z annulla.\n\n"
             "Le modifiche al PDF vanno salvate con «Salva…»."))
         self._stamp_sections = (gf, lf, help_label)
         self._stamp_columns = (c1, c2, c3)
@@ -3078,6 +3835,10 @@ class App:
         t = tk.Menu(m, tearoff=False)
         t.add_command(label="Aggiungi timbro da immagine…", command=self.cmd_add_stamp)
         t.add_command(label="Crea firma (disegnata o scritta)…", command=self.cmd_create_signature)
+        t.add_command(label="Modifica timbro selezionato (ruota, matita, gomma, testo)…",
+                      command=self.cmd_edit_stamp)
+        t.add_command(label="Ruota timbro selezionato a destra", command=lambda: self.rotate_stamp(90))
+        t.add_command(label="Ruota timbro selezionato a sinistra", command=lambda: self.rotate_stamp(-90))
         t.add_command(label="Rinomina timbro selezionato…", command=self.cmd_rename_stamp)
         t.add_command(label="Elimina timbro selezionato", command=self.cmd_delete_stamp)
         t.add_separator()
@@ -3148,6 +3909,19 @@ class App:
 
     def status(self, text):
         self.status_var.set(text)
+
+    def _dir(self, kind, fallback=None):
+        """Cartella da proporre: l'ultima usata per quel tipo di operazione ("open", "add", "save", "split",
+        "word", "image"), altrimenti fallback (es. la cartella del documento), altrimenti l'ultima usata."""
+        for folder in ((self.cfg["dirs"] or {}).get(kind), fallback, self.cfg["last_dir"]):
+            if folder and Path(folder).is_dir():
+                return str(folder)
+        return str(Path.home())
+
+    def _remember_dir(self, kind, folder):
+        if folder:
+            self.cfg.data["last_dir"] = str(folder)
+            self.cfg["dirs"] = dict(self.cfg["dirs"] or {}, **{kind: str(folder)})
 
     # ------------------------------------------------------------ schede
     def _refresh_tabbar(self):
@@ -3509,9 +4283,11 @@ class App:
     # ------------------------------------------------------------ documento
     def cmd_open(self):
         paths = filedialog.askopenfilenames(parent=self.root, title="Apri PDF (anche più di uno)",
-                                            initialdir=self.cfg["last_dir"], filetypes=PDF_TYPES)
+                                            initialdir=self._dir("open"), filetypes=PDF_TYPES)
         for path in paths:
             self.open_file(path)
+        if paths:
+            self._remember_dir("open", Path(paths[0]).parent)
 
     def cmd_new(self):
         self._add_tab(DocTab(pymupdf.open()))
@@ -3540,9 +4316,10 @@ class App:
 
     def cmd_add(self, at_end=True):
         paths = filedialog.askopenfilenames(parent=self.root, title="Aggiungi PDF o immagini",
-                                            initialdir=self.cfg["last_dir"], filetypes=ADD_TYPES)
+                                            initialdir=self._dir("add", self._dir("open")), filetypes=ADD_TYPES)
         if not paths:
             return
+        self._remember_dir("add", Path(paths[0]).parent)
         paths = sorted(paths, key=lambda p: Path(p).name.lower())
         if self.doc is None:
             if not self.open_file(paths.pop(0)) or not paths:
@@ -3564,7 +4341,6 @@ class App:
             self.doc.insert_pdf(src, start_at=pos)
             pos += len(src)
             src.close()
-        self.cfg["last_dir"] = str(Path(paths[0]).parent)
         self.go_to(first, structure=True)
         self.selection = set(range(first, pos))
         self._paint_selection()
@@ -3578,10 +4354,9 @@ class App:
             return False
         if not self.doc:
             return False
-        if self.path:
-            folder, name = Path(self.path).parent, Path(self.path).stem + ".pdf"
-        else:
-            folder, name = self.cfg["last_dir"], f"{self.tab.name}.pdf"
+        # si propone la cartella dell'ultimo salvataggio (la prima volta quella del documento)
+        name = Path(self.path).stem + ".pdf" if self.path else f"{self.tab.name}.pdf"
+        folder = self._dir("save", str(Path(self.path).parent) if self.path else None)
         path = filedialog.asksaveasfilename(parent=self.root, title=f"Salva «{self.tab.name}»", initialdir=folder,
                                             initialfile=name, defaultextension=".pdf", filetypes=PDF_TYPES)
         if not path:
@@ -3600,7 +4375,7 @@ class App:
         self.tab.fonts_added = False
         self.path = path
         self.dirty = False
-        self.cfg["last_dir"] = str(Path(path).parent)
+        self._remember_dir("save", Path(path).parent)
         self._doc_changed()
         self.status(f"Salvato: {path}")
         return True
@@ -3623,7 +4398,9 @@ class App:
         pages = sorted(self._targets())
         stem = Path(self.path).stem if self.path else "documento"
         path = filedialog.asksaveasfilename(parent=self.root, title="Salva pagine estratte",
-                                            initialdir=self.cfg["last_dir"], initialfile=f"{stem}_estratto.pdf",
+                                            initialdir=self._dir("save", str(Path(self.path).parent) if self.path
+                                                                 else None),
+                                            initialfile=f"{stem}_estratto.pdf",
                                             defaultextension=".pdf", filetypes=PDF_TYPES)
         if not path:
             return
@@ -3631,6 +4408,7 @@ class App:
         for i in pages:
             out.insert_pdf(self.doc, from_page=i, to_page=i)
         if self._write_file(path, out.tobytes(garbage=3, deflate=True)):
+            self._remember_dir("save", Path(path).parent)
             self.status(f"Estratte {len(pages)} pagine in {path}")
 
     def cmd_merge_tabs(self):
@@ -3660,7 +4438,7 @@ class App:
         if not self.doc:
             return
         stem = Path(self.path).stem if self.path else self.tab.name
-        folder = str(Path(self.path).parent) if self.path else self.cfg["last_dir"]
+        folder = self._dir("split", str(Path(self.path).parent) if self.path else None)
         dialog = SplitDialog(self.root, len(self.doc), stem, folder, per=self.cfg["split_per"] or 1)
         self.root.wait_window(dialog.top)
         if not dialog.result:
@@ -3695,7 +4473,7 @@ class App:
                     return
         finally:
             self.root.configure(cursor="")
-        self.cfg["last_dir"] = folder
+        self._remember_dir("split", folder)
         self.status(f"Creati {len(paths)} file in {folder}: da «{paths[0].name}» a «{paths[-1].name}».")
         if messagebox.askyesno(APP_NAME, f"Creati {len(paths)} file in:\n{folder}\n\nVuoi aprire la cartella?",
                                parent=self.root):
@@ -4349,7 +5127,8 @@ class App:
                           "lifted": False}
             self.status("Testo selezionato: trascinalo per spostarlo, doppio clic per correggerlo, Canc per "
                         "eliminarlo." if isinstance(hit, PlacedText) else
-                        "Timbro selezionato: trascinalo per spostarlo, Canc o tasto destro per eliminarlo.")
+                        "Timbro selezionato: trascinalo per spostarlo, doppio clic per modificarlo, tasto destro per "
+                        "ruotarlo, Canc per eliminarlo.")
         else:
             if self.sel_stamp is not None:
                 self.sel_stamp = None
@@ -4442,6 +5221,9 @@ class App:
         if isinstance(hit, PlacedText):
             self._drag = None
             self.edit_text_box(hit)
+        elif hit:
+            self._drag = None
+            self.edit_placed_stamp(hit)
         else:
             # due clic veloci nello stesso punto (es. timbrando più pagine di fila) valgono come due clic
             self._on_press(event)
@@ -4457,6 +5239,10 @@ class App:
             menu.add_command(label="Modifica testo…", command=lambda: self.edit_text_box(hit))
             menu.add_command(label="Elimina questo testo", command=self.delete_selected_stamp)
         else:
+            menu.add_command(label="Modifica questo timbro…", command=lambda: self.edit_placed_stamp(hit))
+            menu.add_command(label="Ruota a destra", command=lambda: self.rotate_placed(hit, 90))
+            menu.add_command(label="Ruota a sinistra", command=lambda: self.rotate_placed(hit, -90))
+            menu.add_separator()
             menu.add_command(label="Elimina questo timbro", command=self.delete_selected_stamp)
         menu.tk_popup(event.x_root, event.y_root)
 
@@ -4504,6 +5290,53 @@ class App:
         else:
             self.delete_pages()
 
+    def rotate_placed(self, stamp, angle):
+        """Ruota un timbro già apposto attorno al suo centro (solo questo, su questa pagina)."""
+        self._snapshot()
+        rotate_placed_stamp(self.doc[self.current], stamp, angle)
+        self.sel_stamp = stamp.index
+        self._doc_changed(pages=[self.current])
+        self.status(f"Timbro ruotato {'a destra' if angle > 0 else 'a sinistra'}. (Ctrl+Z per annullare)")
+
+    def edit_placed_stamp(self, stamp):
+        """Modifica un timbro già apposto (solo questo): ruota, ritocca e, per le firme create nel
+        programma, riscrive il testo o ridisegna; il timbro resta dov'era, primo o secondo piano compreso."""
+        page = self.doc[self.current]
+        try:
+            pix, xref = placed_stamp_image(page, stamp)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile leggere l'immagine del timbro:\n{exc}", parent=self.root)
+            return
+        angle = stamp_view_angle(page, stamp)
+        source, baked = stamp_source(self.doc, xref) or self._gallery_source(pix) or (None, 0)
+        StampEditor.last_image_dir = self._dir("image")
+        editor = StampEditor(self.root, self.fonts, rotate_pixmap(pix, angle), stamp.rect.width / MM,
+                             "Modifica timbro sulla pagina", source=source, source_rotation=(baked + angle) % 360)
+        self.root.wait_window(editor.top)
+        self._remember_dir("image", StampEditor.last_image_dir)
+        r = editor.result
+        if not r:
+            return
+        self._snapshot()
+        replace_placed_stamp(page, stamp, r["image"], r["width_mm"], r["source"],
+                             (editor.source_rotation + r["rotation"]) % 360)
+        self.sel_stamp = stamp.index
+        self._doc_changed(pages=[self.current])
+        self.status("Timbro modificato su questa pagina; quello nella galleria non cambia. (Ctrl+Z per annullare)")
+
+    def _gallery_source(self, pix):
+        """(source, rotazione) della firma della galleria con la stessa immagine: serve per i timbri apposti
+        prima che il PDF ricordasse il testo delle firme."""
+        alpha = pymupdf.Pixmap(None, pix).samples if pix.alpha else None
+        for item in self.library.items:
+            p = self.library.stamps[item["id"]].pixmap
+            if not item.get("source") or (p.width, p.height, bool(p.alpha)) != (pix.width, pix.height, bool(pix.alpha)):
+                continue
+            # i colori possono differire di un'unità per gli arrotondamenti del PDF; la trasparenza no
+            if (pymupdf.Pixmap(None, p).samples == alpha) if alpha is not None else p.samples == pix.samples:
+                return item["source"], item["rotate"]
+        return None
+
     # ------------------------------------------------------- timbro
     def _stamp_size_pt(self):
         w = self.stamp_item["width_mm"] * MM
@@ -4529,7 +5362,7 @@ class App:
             page.insert_image(rect, xref=xref, rotate=page.rotation, overlay=item["overlay"])
         else:
             xref = page.insert_image(rect, stream=self.stamp.png, rotate=page.rotation, overlay=item["overlay"])
-            self.doc.xref_set_key(xref, STAMP_KEY, "true")
+            mark_stamp_image(self.doc, xref, item.get("source"), item["rotate"])
             self.stamp_xrefs[item["id"]] = xref
 
     def _redraw_ghost(self):
@@ -4707,16 +5540,50 @@ class App:
             return None
         return insert_text_box(page, params, fontfile, resname)
 
+    def _ask_text(self, title, params, place, area, original=None, whiteout=None, cover=None):
+        """Finestra del testo con l'anteprima dal vivo sulla pagina; restituisce il risultato della finestra.
+
+        place(dati della finestra) -> parametri completi della casella (origine, rotazione); area: dove sta
+        il testo nella pagina vista (la finestra si sposta per non coprirlo); cover: testo che verrà
+        sostituito, coperto di bianco nell'anteprima.
+        """
+        page = self.doc[self.current]
+        dialog = TextDialog(self.root, self.fonts, title, params, original=original, whiteout=whiteout,
+                            preview=lambda p: self._show_text_preview(page, place(p) if p else None, cover))
+        x0, y0, x1, y1 = self._canvas_rect(area)
+        dx, dy = self.view.winfo_rootx() - self.view.canvasx(0), self.view.winfo_rooty() - self.view.canvasy(0)
+        keep_clear(dialog.top, (x0 + dx, y0 + dy, x1 + dx, y1 + dy))
+        self.root.wait_window(dialog.top)
+        self._show_text_preview(page, None)
+        return dialog.result
+
+    def _show_text_preview(self, page, params, cover=None):
+        """Mostra sulla pagina il testo che si sta scrivendo, com'è nel PDF (params None lo toglie)."""
+        self.view.delete("textpreview")
+        self._text_photo = None
+        if not params or not self.doc or page.number != self.current:
+            return
+        try:
+            pix, clip = text_preview(page, params, self.fonts.get(params["font"]), self.cur_zoom)
+        except Exception:
+            return
+        if cover:
+            self.view.create_rectangle(*self._canvas_rect(cover), fill="white", outline="", tags="textpreview")
+        x0, y0, x1, y1 = self._canvas_rect(clip)
+        self._text_photo = photo_from_pixmap(pix)
+        self.view.create_image(x0, y0, anchor="nw", image=self._text_photo, tags="textpreview")
+        self.view.create_rectangle(x0 - 2, y0 - 2, x1 + 2, y1 + 2, outline="#1a73e8", dash=(4, 3), tags="textpreview")
+
     def edit_line(self, line):
         """Corregge una riga del PDF: il vecchio testo si elimina e il nuovo si scrive nello stesso punto."""
         page = self.doc[self.current]
         font = match_font(line.font, line.flags, self.fonts) or "Arial"
-        dialog = TextDialog(self.root, self.fonts, "Modifica testo",
-                            {"text": line.text, "font": font, "size": round(line.size, 1), "color": line.color},
-                            original=f"Testo originale: {re.sub(r'^[A-Z]{6}[+]', '', line.font)}, {line.size:.1f} pt",
-                            whiteout=image_under(page, line.rect))
-        self.root.wait_window(dialog.top)
-        r = dialog.result
+        seen = line.rect * page.rotation_matrix
+        r = self._ask_text("Modifica testo",
+                           {"text": line.text, "font": font, "size": round(line.size, 1), "color": line.color},
+                           lambda p: dict(p, origin=list(line.origin), rotate=line.rotate), seen,
+                           original=f"Testo originale: {re.sub(r'^[A-Z]{6}[+]', '', line.font)}, {line.size:.1f} pt",
+                           whiteout=image_under(page, line.rect), cover=seen + (-1, -1, 1, 1))
         if not r:
             return
         self._snapshot()
@@ -4732,10 +5599,10 @@ class App:
         self.status("Testo corretto: ora è una casella che puoi spostare o ricorreggere. (Ctrl+Z per annullare)")
 
     def edit_text_box(self, box):
-        dialog = TextDialog(self.root, self.fonts, "Modifica casella di testo", box.params)
-        self.root.wait_window(dialog.top)
-        r = dialog.result
+        self._render_page(without=box)   # mentre la si corregge si vede solo l'anteprima
+        r = self._ask_text("Modifica casella di testo", box.params, lambda p: dict(box.params, **p), box.rect)
         if not r:
+            self._render_page()
             return
         self._snapshot()
         params = dict(box.params, **{k: r[k] for k in ("text", "font", "size", "color")})
@@ -4750,17 +5617,21 @@ class App:
         if not page.rect.contains(pymupdf.Point(px, py)):
             return
         style = self.cfg["text_style"] or {"font": "Arial", "size": 11, "color": "#000000"}
-        dialog = TextDialog(self.root, self.fonts, "Aggiungi testo", dict(style, text=""))
-        self.root.wait_window(dialog.top)
-        r = dialog.result
+
+        def place(p):
+            """Il punto cliccato è l'angolo in alto a sinistra della casella."""
+            ascender = text_font(self.fonts.get(p["font"])).ascender
+            origin = pymupdf.Point(px, py + ascender * p["size"]) * page.derotation_matrix
+            return dict(p, origin=[origin.x, origin.y], rotate=page.rotation)
+
+        r = self._ask_text("Aggiungi testo", dict(style, text=""), place,
+                           pymupdf.Rect(px, py, px + 40 * style["size"], py + 4 * style["size"]))
         if not r:
             return
         style = {k: r[k] for k in ("font", "size", "color")}
         self.cfg["text_style"] = style
-        ascender = text_font(self.fonts.get(r["font"])).ascender
-        origin = pymupdf.Point(px, py + ascender * r["size"]) * page.derotation_matrix
         self._snapshot()
-        self._write_text(page, dict(style, text=r["text"], origin=[origin.x, origin.y], rotate=page.rotation))
+        self._write_text(page, place(dict(style, text=r["text"])))
         self._doc_changed(pages=[self.current])
         self.status("Testo aggiunto: trascinalo per spostarlo, doppio clic per correggerlo. (Ctrl+Z per annullare)")
 
@@ -4933,7 +5804,8 @@ class App:
                 return
         stem = Path(self.path).stem if self.path else "documento"
         path = filedialog.asksaveasfilename(parent=self.root, title="Esporta in Word",
-                                            initialdir=Path(self.path).parent if self.path else self.cfg["last_dir"],
+                                            initialdir=self._dir("word", str(Path(self.path).parent) if self.path
+                                                                 else None),
                                             initialfile=stem + ".docx", defaultextension=".docx",
                                             filetypes=DOCX_TYPES)
         if not path:
@@ -4963,7 +5835,7 @@ class App:
             if error:
                 messagebox.showerror(APP_NAME, f"Esportazione in Word non riuscita:\n\n{error}", parent=self.root)
                 return
-            self.cfg["last_dir"] = str(Path(path).parent)
+            self._remember_dir("word", Path(path).parent)
             self.status(f"Esportato in Word: {path}")
             if messagebox.askyesno(APP_NAME, f"Documento Word creato:\n{path}\n\nVuoi aprirlo?", parent=self.root):
                 os.startfile(path)
@@ -4975,9 +5847,10 @@ class App:
         if not self._library_ready():
             return
         path = filedialog.askopenfilename(parent=self.root, title="Scegli l'immagine del timbro",
-                                          initialdir=self.cfg["last_dir"], filetypes=IMAGE_TYPES)
+                                          initialdir=self._dir("image"), filetypes=IMAGE_TYPES)
         if not path:
             return
+        self._remember_dir("image", Path(path).parent)
         name = simpledialog.askstring(APP_NAME, "Nome del timbro:", initialvalue=Path(path).stem, parent=self.root)
         if name is None:
             return
@@ -5016,42 +5889,45 @@ class App:
     def cmd_edit_stamp(self):
         """Modifica il timbro selezionato senza crearne uno nuovo: restano posto in galleria e impostazioni.
 
-        Le firme create qui si riaprono con il loro testo (o disegno); per un timbro caricato da
-        immagine si può solo sostituire l'immagine.
+        Ogni timbro si può ruotare e ritoccare (matita, evidenziatore, gomma, testo, editor esterno);
+        le firme create qui si possono anche riscrivere o ridisegnare.
         """
         item = self.stamp_item
-        if not item:
+        if not item or not self._library_ready():
             return
-        if item.get("source"):
-            dialog = SignatureDialog(self.root, source=item["source"], name=item["name"])
-            self.root.wait_window(dialog.top)
-            if not dialog.result:
-                return
-            image, name, width_mm, source = dialog.result
-            item.update(name=name, source=source)
-            if source["kind"] == "typed":   # la dimensione in punti scelta per il testo
-                item["width_mm"] = width_mm
-            what = f"Firma «{name}» modificata"
-        else:
-            if not messagebox.askyesno(APP_NAME, f"«{item['name']}» è un'immagine: il testo che contiene non si può "
-                                       "modificare.\n\nVuoi sostituirla con un'altra immagine, mantenendo nome, "
-                                       "dimensione e impostazioni?", parent=self.root):
-                return
-            image = filedialog.askopenfilename(parent=self.root, title="Nuova immagine del timbro",
-                                               initialdir=self.cfg["last_dir"], filetypes=IMAGE_TYPES)
-            if not image:
-                return
-            what = f"Immagine di «{item['name']}» sostituita"
+        StampEditor.last_image_dir = self._dir("image")
+        editor = StampEditor(self.root, self.fonts, pymupdf.Pixmap(self.stamp.original_png), item["width_mm"],
+                             f"Modifica timbro «{item['name']}»", name=item["name"], rotation=item["rotate"],
+                             source=item.get("source"), remove_white=item["remove_white"],
+                             tolerance=item["white_tolerance"])
+        self.root.wait_window(editor.top)
+        self._remember_dir("image", StampEditor.last_image_dir)
+        if not editor.result:
+            return
         try:
-            self.library.replace_image(item, image)
+            self.library.apply_edit(item, editor.result)
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Impossibile aggiornare il timbro:\n{exc}", parent=self.root)
             return
+        self._stamp_image_changed(item)
+        self.status(f"Timbro «{item['name']}» modificato. I timbri già apposti nei PDF restano com'erano "
+                    "(si modificano con il tasto destro sul timbro).")
+
+    def rotate_stamp(self, angle):
+        """Ruota il timbro selezionato della galleria (vale per i timbri apposti da ora in poi)."""
+        item = self.stamp_item
+        if not item or not self._library_ready():
+            return
+        self.library.rotate(item, angle)
+        self._stamp_image_changed(item)
+        self.status(f"«{item['name']}» ruotato {'a destra' if angle > 0 else 'a sinistra'}: vale per i timbri che "
+                    "apponi da ora in poi.")
+
+    def _stamp_image_changed(self, item):
         for tab in self.tabs:   # nei documenti aperti la nuova immagine va inserita da capo
             tab.stamp_xrefs.pop(item["id"], None)
         self._gallery_photos.pop(item["id"], None)
         self._stamp_selected()
-        self.status(f"{what}. I timbri già apposti nei PDF restano com'erano.")
 
     def _on_gallery_double(self, event):
         k = self._gallery_index(event)
@@ -5060,10 +5936,7 @@ class App:
                 self._library_ready()
             return
         self.select_stamp(k)
-        if self.stamp_item.get("source"):
-            self.cmd_edit_stamp()
-        else:
-            self.cmd_rename_stamp()
+        self.cmd_edit_stamp()
 
     def cmd_rename_stamp(self):
         item = self.stamp_item
@@ -5155,13 +6028,7 @@ class App:
         height = 6 + -(-len(items) // self._gallery_cols) * (TILE_H + 26)
         c.configure(scrollregion=(0, 0, width, max(GALLERY_H, height)))
 
-    @staticmethod
-    def _draw_checker(c, x0, y0, x1, y1, n=10):
-        """Scacchiera grigio chiaro: rende visibili le parti trasparenti del timbro."""
-        x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
-        for y in range(y0, y1, n):
-            for x in range(x0 + n * ((y - y0) // n % 2), x1, 2 * n):
-                c.create_rectangle(x, y, min(x + n, x1), min(y + n, y1), fill="#e9e9ee", outline="")
+    _draw_checker = staticmethod(draw_checker)
 
     def _gallery_index(self, event):
         x, y = self.gallery.canvasx(event.x), self.gallery.canvasy(event.y)
@@ -5182,8 +6049,10 @@ class App:
             return
         self.select_stamp(k)
         menu = tk.Menu(self.root, tearoff=False)
-        menu.add_command(label="Modifica firma…" if self.stamp_item.get("source") else "Sostituisci immagine…",
-                         command=self.cmd_edit_stamp)
+        menu.add_command(label="Modifica… (ruota, matita, gomma, testo)", command=self.cmd_edit_stamp)
+        menu.add_command(label="Ruota a destra", command=lambda: self.rotate_stamp(90))
+        menu.add_command(label="Ruota a sinistra", command=lambda: self.rotate_stamp(-90))
+        menu.add_separator()
         menu.add_command(label="Rinomina…", command=self.cmd_rename_stamp)
         menu.add_command(label="Elimina", command=self.cmd_delete_stamp)
         menu.tk_popup(event.x_root, event.y_root)

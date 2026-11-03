@@ -91,7 +91,22 @@ class AutoEdit(Real):
         self._save()
 
 
+class AutoEditor(tp.StampEditor):
+    """La finestra vera di modifica del timbro: esegue action(editor) e salva."""
+    action = None
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.top.after(80, self._auto)
+
+    def _auto(self):
+        AutoEditor.action(self)
+        self._save()
+
+
 tp.SignatureDialog = AutoEdit
+tp.StampEditor = AutoEditor
+AutoEditor.action = lambda ed: ed._edit_source()       # «Modifica il testo della firma…»
 app.cmd_edit_stamp()
 assert seen["tab"] == 1 and seen["text"] == "Ing. Mario Bianchi" and seen["size"] == "28", seen
 assert seen["title"] == "Modifica firma" and seen["color"] == "#1f3a93", seen
@@ -99,8 +114,10 @@ it = app.library.items[0]
 assert it is item and it["id"] == item["id"] and len(app.library.items) == 1, "stessa voce, non una nuova"
 assert it["name"] == "Firma scritta (mod.)" and it["source"]["text"] == "Ing. Mario Bianchi Rossi"
 assert it["overlay"] is False, "le impostazioni restano"
-assert it["width_mm"] != old_width and app.stamp.pixmap.width != old_px, "immagine e misura aggiornate"
-print(f"firma scritta modificata: stessa voce, {old_width} -> {it['width_mm']} mm, impostazioni conservate: ok")
+new_px = app.stamp.pixmap.width
+assert new_px != old_px and abs(it["width_mm"] - new_px * old_width / old_px) < 0.2, \
+    "firma riscritta: stessa scala (mm per pixel), quindi la misura segue il testo"
+print(f"firma scritta modificata: stessa voce, {old_width} -> {it['width_mm']} mm alla stessa scala: ok")
 
 # firma disegnata: riaperta con i suoi tratti
 strokes = [[[0.1 + 0.02 * k, 0.5 + 0.1 * (k % 2)] for k in range(20)], [[0.6, 0.3]], [[0.7, 0.6], [0.8, 0.7]]]
@@ -108,10 +125,12 @@ pix2, _ = tp.drawn_signature([[(x * 680, y * 230) for x, y in s] for s in stroke
 drawn = app.library.add(pix2, "Firma a mano", width_mm=50, remove_white=False,
                         source={"kind": "drawn", "color": "#111111", "thickness": 3, "strokes": strokes})
 app._stamp_selected()
+old_px = app.stamp.pixmap.width
 app.cmd_edit_stamp()
 assert seen["tab"] == 0 and seen["strokes"] == 3, seen
-assert len(drawn["source"]["strokes"]) == 2 and drawn["width_mm"] == 50, "un tratto annullato, misura invariata"
-print("firma disegnata riaperta con i suoi 3 tratti e modificata: ok")
+assert len(drawn["source"]["strokes"]) == 2, "un tratto annullato"
+assert abs(drawn["width_mm"] - app.stamp.pixmap.width * 50 / old_px) < 0.2, "i tratti rimasti non cambiano misura"
+print("firma disegnata riaperta con i suoi 3 tratti e modificata alla stessa scala: ok")
 
 # timbro caricato da immagine: si sostituisce l'immagine
 img = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 80, 40), 0)
@@ -123,10 +142,13 @@ img2.save(str(OUT / "timbro2.png"))
 stamp_item = app.library.add(str(OUT / "timbro1.png"), "Timbro", width_mm=42)
 app._stamp_selected()
 tp.filedialog.askopenfilename = lambda **k: str(OUT / "timbro2.png")
+AutoEditor.action = lambda ed: ed._replace()           # «Sostituisci immagine…»
 app.cmd_edit_stamp()
 assert stamp_item["width_mm"] == 42 and abs(app.stamp.aspect - 1) < 0.01, "immagine nuova, misura conservata"
 assert [i["name"] for i in app.library.items] == ["Firma scritta (mod.)", "Firma a mano (mod.)", "Timbro"]
+assert app.cfg["dirs"]["image"] == str(OUT), "la cartella delle immagini dei timbri viene ricordata"
 tp.SignatureDialog = Real
+tp.StampEditor = AutoEditor.__mro__[1]
 print("timbro da immagine: immagine sostituita mantenendo nome e misura: ok")
 
 # ---------------------------------------------------------------- 2. schede: riordino e unione
