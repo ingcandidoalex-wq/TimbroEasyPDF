@@ -1,5 +1,9 @@
 """TimbroEasyPDF — visualizza, ruota e unisci PDF e applica il tuo timbro con un clic.
 
+Copyright (C) 2026 Alessandro Candido. Software libero: si può ridistribuire e modificare alle condizioni
+della GNU Affero General Public License, versione 3 o successiva (file LICENSE). SENZA ALCUNA GARANZIA.
+SPDX-License-Identifier: AGPL-3.0-or-later
+
 Avvio:       python timbro_pdf.py [file.pdf ...]
 Dipendenze:  pip install pymupdf   (l'OCR usa i file della cartella tessdata,
              l'esportazione in Word usa Microsoft Word installato sul PC)
@@ -2284,32 +2288,37 @@ FEEDBACK_EMAIL = "ing.candido.alex@gmail.com"   # suggerimenti e segnalazioni
 UPDATE_REPO = "ingcandidoalex-wq/TimbroEasyPDF"
 UPDATE_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
 DOWNLOAD_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
+SOURCE_URL = f"https://github.com/{UPDATE_REPO}"   # codice sorgente (licenza AGPL-3.0)
 LICENSE_VERSION = 2   # va aumentato quando cambiano le condizioni: si richiede di accettarle di nuovo
-# bozza delle condizioni d'uso: da far rivedere prima di distribuire il programma
+# condizioni d'uso mostrate dal programma e dal setup (il testo legale della licenza è nel file LICENSE)
 LICENSE_TEXT = f"""\
-CONDIZIONI DI LICENZA D'USO
+LICENZA E CONDIZIONI D'USO
 
 {APP_NAME} è stato ideato dall'{AUTHOR} e realizzato con l'ausilio dell'intelligenza artificiale.
 © 2026 Alessandro Candido.
 
-1. Uso. Il programma serve a consultare e modificare documenti PDF di cui si ha la disponibilità.
+{APP_NAME} è software libero e gratuito: puoi usarlo, copiarlo, modificarlo e ridistribuirlo alle
+condizioni della GNU Affero General Public License, versione 3 o successiva (AGPL-3.0), pubblicata dalla
+Free Software Foundation. Il testo completo è nel file LICENSE accanto al programma e su
+https://www.gnu.org/licenses/agpl-3.0.html. Il codice sorgente è su {SOURCE_URL}.
 
-2. Timbri e firme. Chi usa il programma è l'unico responsabile dei timbri e delle firme che inserisce:
-devono essere i propri, oppure deve essere autorizzato a usarli. È vietato usare il programma per
-falsificare documenti, timbri o firme.
+1. Nessuna garanzia. Il programma è fornito «così com'è», senza garanzie di alcun tipo (articoli 15 e 16
+della licenza). Controlla sempre i documenti prodotti prima di usarli o di inviarli e conserva una copia
+degli originali.
 
-3. Nessuna garanzia. Il programma è fornito «così com'è», senza garanzie di alcun tipo. Controlla sempre
-i documenti prodotti prima di usarli o di inviarli e conserva una copia degli originali.
-
-4. Responsabilità. Nei limiti consentiti dalla legge, l'autore non risponde di danni diretti o indiretti
+2. Responsabilità. Nei limiti consentiti dalla legge, l'autore non risponde di danni diretti o indiretti
 derivanti dall'uso del programma o dal suo mancato funzionamento, compresa la perdita di dati.
 
-5. Dati. Il programma lavora sul tuo PC e non invia i documenti a nessuno. L'esportazione in Word usa
+3. Timbri e firme: un'avvertenza. Chi usa il programma è il solo responsabile dei timbri e delle firme che
+inserisce: devono essere i propri, oppure deve essere autorizzato a usarli. Falsificare documenti, timbri
+o firme è un reato.
+
+4. Dati. Il programma lavora sul tuo PC e non invia i documenti a nessuno. L'esportazione in Word usa
 Microsoft Word installato sul PC. L'archivio dei timbri resta dove lo salvi tu. Se l'opzione è attiva
 (menu ?), una volta al giorno il programma legge da GitHub il numero dell'ultima versione pubblicata:
 la richiesta non contiene documenti né dati personali.
 
-6. Componenti di terze parti, ciascuno soggetto alla propria licenza:
+5. Componenti di terze parti, ciascuno soggetto alla propria licenza:
    • PyMuPDF / MuPDF – Artifex Software (AGPL-3.0 o licenza commerciale)
    • Tesseract OCR, dati delle lingue – Apache License 2.0
    • Python – Python Software Foundation License
@@ -2365,6 +2374,7 @@ class AboutDialog:
         buttons = ttk.Frame(body)
         buttons.pack(fill=tk.X, pady=(14, 0))
         ttk.Button(buttons, text="Scrivi all'autore…", command=lambda: FeedbackDialog(top)).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Codice sorgente", command=self._source).pack(side=tk.LEFT, padx=6)
         if must_accept:
             ttk.Button(buttons, text="Non accetto (esci)", command=top.destroy).pack(side=tk.RIGHT)
             ttk.Button(buttons, text="Accetto le condizioni", command=self._accept).pack(side=tk.RIGHT, padx=6)
@@ -2378,6 +2388,11 @@ class AboutDialog:
         import webbrowser
         self._copy()   # pronto da incollare come destinatario
         webbrowser.open(DONATION_URL)
+
+    @staticmethod
+    def _source():
+        import webbrowser
+        webbrowser.open(SOURCE_URL)
 
     def _copy(self):
         self.top.clipboard_clear()

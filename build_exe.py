@@ -6,11 +6,14 @@
   Guida <nome>.pdf             la guida illustrata
 
 Se nell'archivio di Windows c'è il certificato per la firma del codice, exe e setup escono firmati
-(vedi firma_codice.py).
+(vedi firma_codice.py). Il setup normale è quello da pubblicare; con --studio se ne crea uno a parte,
+«Setup <nome> <versione> (studio).exe», con l'opzione che installa il certificato autofirmato: solo
+per i PC dello studio, mai da distribuire.
 
 Uso:  python -m pip install pyinstaller pymupdf
       python build_exe.py               (tutto)
       python build_exe.py --solo-setup  (solo l'installatore, es. se l'exe è aperto e non si può riscrivere)
+      python build_exe.py --studio      (in più: l'installatore per i PC dello studio, con il certificato)
 """
 
 import os
@@ -50,7 +53,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=@DIST@
-OutputBaseFilename=Setup {#AppName} {#AppVersion}
+OutputBaseFilename=Setup {#AppName} {#AppVersion}@SUFFIX@
 SetupIconFile=@ICON@
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
@@ -81,6 +84,7 @@ Name: "certificato"; Description: "Considera attendibili i programmi firmati da 
 [Files]
 Source: "@APPDIR@\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "@GUIDE@"; DestDir: "{app}"; Flags: ignoreversion
+Source: "@AGPL@"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 #ifdef CertFile
 Source: "{#CertFile}"; DestDir: "{app}"; Flags: ignoreversion; Tasks: certificato
 #endif
@@ -149,6 +153,7 @@ def pyinstaller(mode, distpath, ico, work):
                     "--name", APP_NAME, "--icon", str(ico),
                     "--add-data", f"{HERE / 'tessdata'}{os.pathsep}tessdata",   # lingue dell'OCR
                     "--add-data", f"{HERE / GUIDE_NAME}{os.pathsep}.",           # guida illustrata
+                    "--add-data", f"{HERE / 'LICENSE'}{os.pathsep}.",            # testo della licenza AGPL-3.0
                     "--workpath", str(Path(work) / "build"), "--specpath", work, "--distpath", str(distpath),
                     *[arg for mod in EXCLUDED for arg in ("--exclude-module", mod)],
                     str(HERE / "timbro_pdf.py")],
@@ -163,7 +168,8 @@ def find_iscc():
     return next((p for p in candidates if p.exists()), None) or shutil.which("ISCC")
 
 
-def build_setup(iscc, appdir, ico, work):
+def build_setup(iscc, appdir, ico, work, studio=False):
+    """studio: con l'opzione che installa il certificato autofirmato (solo per i PC dello studio)."""
     licence = Path(work) / "licenza.txt"
     licence.write_text(LICENSE_TEXT, encoding="utf-8-sig")
     defines, options = "", []
@@ -173,14 +179,16 @@ def build_setup(iscc, appdir, ico, work):
         defines = f'#define Firma\n#define Firmatario "{FIRMATARIO}"\n'
         # Inno Setup firma richiamando firma_codice.py ($q sono le virgolette, $f il file da firmare)
         options.append(f"/Sfirma=$q{sys.executable}$q $q{HERE / 'firma_codice.py'}$q $f")
-        if self_signed:   # nessun ente lo garantisce: il setup può installarlo (opzione)
+        if self_signed and studio:   # nessun ente lo garantisce: lo si installa solo dove ci si fida (opzione)
             cer = export_certificate(Path(work) / f"{FIRMATARIO} - firma del codice.cer")
             defines += f'#define CertFile "{cer}"\n#define CertName "{cer.name}"\n#define CertThumb "{thumbprint}"\n'
+    suffix = " (studio)" if studio else ""
     script = INSTALLER
     for key, value in (("@FIRMA@", defines), ("@APP_ID@", APP_ID[1:]), ("@APP@", APP_NAME), ("@VERSION@", APP_VERSION),
                        ("@AUTHOR@", AUTHOR[0].upper() + AUTHOR[1:]), ("@DIST@", str(DIST)), ("@ICON@", str(ico)),
                        ("@LICENSE@", str(licence)), ("@MUTEX@", APP_MUTEX), ("@APPDIR@", str(appdir)),
-                       ("@GUIDE@", str(HERE / GUIDE_NAME)), ("@GUIDE_NAME@", GUIDE_NAME), ("@PROG@", PROG_ID)):
+                       ("@GUIDE@", str(HERE / GUIDE_NAME)), ("@GUIDE_NAME@", GUIDE_NAME), ("@PROG@", PROG_ID),
+                       ("@AGPL@", str(HERE / "LICENSE")), ("@SUFFIX@", suffix)):
         script = script.replace(key, value)
     # si crea fuori da Dropbox: mentre la sincronizzazione o l'antivirus leggono il file appena scritto,
     # Windows non permette di aggiungervi l'icona (EndUpdateResource); poi lo si copia in dist
@@ -189,7 +197,7 @@ def build_setup(iscc, appdir, ico, work):
     iss = Path(work) / "installer.iss"
     iss.write_text(script, encoding="utf-8-sig")
     subprocess.run([str(iscc), "/Q", *options, str(iss)], check=True)
-    setup = DIST / f"Setup {APP_NAME} {APP_VERSION}.exe"
+    setup = DIST / f"Setup {APP_NAME} {APP_VERSION}{suffix}.exe"
     shutil.copy(out / setup.name, setup)
     return setup
 
@@ -216,3 +224,5 @@ if __name__ == "__main__":
         pyinstaller("--onedir", appdir, ico, work)
         sign(appdir / APP_NAME / f"{APP_NAME}.exe")
         print("Pronto:", build_setup(iscc, appdir / APP_NAME, ico, work))
+        if "--studio" in sys.argv:
+            print("Pronto:", build_setup(iscc, appdir / APP_NAME, ico, work, studio=True))
