@@ -28,7 +28,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -107,7 +107,9 @@ Le firme create qui si possono anche riscrivere o ridisegnare; dopo un
 ritocco a mano restano un'immagine. Nome e impostazioni restano gli stessi.
 Le modifiche valgono per i timbri apposti da quel momento in poi; quelli già
 sulla pagina si modificano a uno a uno con doppio clic (o tasto destro).
-I pulsanti ↺ e ↻ ruotano al volo il timbro selezionato nella galleria.
+I pulsanti ↺ e ↻ ruotano al volo il timbro selezionato dei gradi scritti fra
+i due (es. 90 o 10); gli stessi gradi valgono nell'editor e con il tasto destro
+sui timbri della pagina. Con angoli diversi da 90° gli angoli restano trasparenti.
 
 DISPOSIZIONE
 Trascina la maniglia ⋮ di una barra di pulsanti verso un lato della finestra
@@ -161,11 +163,25 @@ TESTO
   pagina, che resta identica: poi si può cercare, copiare, esportare in Word.
 • Esporta in Word: usa Microsoft Word installato sul PC.
 
-SCORCIATOIE
-Ctrl+O apri · Ctrl+N nuovo · Ctrl+S salva · Ctrl+W chiudi scheda · Ctrl+Tab scheda dopo
-Ctrl+Z annulla · Ctrl+Y ripristina · Ctrl+F cerca
-Ctrl+R ruota a destra · Ctrl+Maiusc+R ruota a sinistra · Canc elimina pagine
-PagSu/PagGiù cambia pagina · Ctrl+rotella zoom · trascina per spostare la vista
+SUGGERIMENTI E AGGIORNAMENTI
+? ▸ Scrivi all'autore: apre la posta con un messaggio pronto per suggerimenti o
+per segnalare un problema. Una volta al giorno il programma controlla se c'è
+una versione nuova (si può disattivare dal menu ?).
+
+SCORCIATOIE (sono scritte anche accanto alle voci dei menu)
+File    Ctrl+O apri · Ctrl+N nuovo · Ctrl+I aggiungi in fondo · Ctrl+Maiusc+I inserisci
+        Ctrl+S salva · Ctrl+E estrai pagine · Ctrl+Maiusc+W Word · Ctrl+U unisci
+        Ctrl+D dividi · Ctrl+W chiudi scheda · Ctrl+Tab scheda dopo · Ctrl+Q esci
+Pagine  Ctrl+Z annulla · Ctrl+Y ripristina · Ctrl+R / Ctrl+Maiusc+R ruota
+        Ctrl+↑ / Ctrl+↓ sposta · Canc elimina · Ctrl+A tutte · PagSu/PagGiù
+Vista   Ctrl+0 pagina intera · Ctrl+1 100% · Ctrl+2 larghezza · Ctrl+rotella zoom
+        F4 vista d'insieme · trascina per spostare la vista
+Testo   Ctrl+M modifica · Ctrl+T aggiungi · Ctrl+B bianchetto · Ctrl+Maiusc+B oscura
+        Ctrl+Maiusc+O OCR · Ctrl+F cerca
+Timbro  T modalità timbro · 1–9 scegli · Ctrl+Maiusc+N da immagine · Ctrl+Maiusc+F firma
+        Ctrl+Maiusc+M modifica · Ctrl+Maiusc+→ / ← ruota · F2 rinomina
+        Ctrl+Maiusc+P ripeti su tutte · Ctrl+Maiusc+A archivio
+Guida   F1 guida rapida · Maiusc+F1 guida illustrata
 """
 
 
@@ -224,14 +240,20 @@ def draw_checker(c, x0, y0, x1, y1, n=10, tags=()):
 
 
 def icon_pixmap(size=64):
-    """Icona dell'app: un foglio con un timbro rosso."""
+    """Icona dell'app: un foglio con un timbro rosso e la fascetta «PDF» che sporge in alto a destra."""
     doc = pymupdf.open()
     page = doc.new_page(width=64, height=64)
-    page.draw_rect(pymupdf.Rect(10, 3, 46, 57), color=(0.35, 0.35, 0.4), fill=(1, 1, 1), width=2.5)
-    for y in (13, 19, 25):
-        page.draw_line((16, y), (40, y), color=(0.6, 0.6, 0.65), width=2)
-    page.draw_circle((44, 45), 15, color=(0.78, 0.1, 0.1), fill=(1, 0.92, 0.92), width=4)
-    page.draw_circle((44, 45), 7, color=(0.78, 0.1, 0.1), width=2)
+    page.draw_rect(pymupdf.Rect(8, 3, 44, 57), color=(0.35, 0.35, 0.4), fill=(1, 1, 1), width=2.5)
+    for y in (30, 36, 42):
+        page.draw_line((14, y), (26, y), color=(0.6, 0.6, 0.65), width=2)
+    page.draw_circle((43, 46), 14, color=(0.78, 0.1, 0.1), fill=(1, 0.92, 0.92), width=4)
+    page.draw_circle((43, 46), 6.5, color=(0.78, 0.1, 0.1), width=2)
+    band = pymupdf.Rect(20, 8, 61, 25)
+    page.draw_rect(band + (1.2, 1.5, 1.2, 1.5), color=None, fill=(0.45, 0.05, 0.05))   # ombra: la fascetta sporge
+    page.draw_rect(band, color=None, fill=(0.82, 0.12, 0.12))
+    width = pymupdf.get_text_length("PDF", fontname="hebo", fontsize=14)
+    page.insert_text((band.x0 + (band.width - width) / 2, band.y1 - 3.6), "PDF", fontname="hebo", fontsize=14,
+                     color=(1, 1, 1))
     return page.get_pixmap(matrix=pymupdf.Matrix(size / 64, size / 64), alpha=True)
 
 
@@ -604,11 +626,40 @@ def stamp_pixmap(pix):
     return pix
 
 
+def parse_angle(text, default=90.0):
+    """Gradi scritti dall'utente («10», «12,5»): da 0,1 a 359,9; altrimenti default."""
+    try:
+        value = float(str(text).replace(",", ".").replace("°", "").strip())
+    except ValueError:
+        return default
+    return value if 0.1 <= value <= 359.9 else default
+
+
+def rotate_any(pix, angle):
+    """L'immagine ruotata di un angolo qualsiasi in senso orario: si allarga quanto serve e gli angoli
+    restano trasparenti (nera, cioè trasparente, una maschera grigia)."""
+    a = math.radians(angle)
+    c, s = abs(math.cos(a)), abs(math.sin(a))
+    src = pymupdf.open()
+    page = src.new_page(width=pix.width, height=pix.height)
+    page.insert_image(page.rect, pixmap=pix)
+    doc = pymupdf.open()
+    out = doc.new_page(width=max(1, round(pix.width * c + pix.height * s)),
+                       height=max(1, round(pix.width * s + pix.height * c)))
+    gray = pix.colorspace is None or pix.colorspace.n == 1
+    if gray:
+        out.draw_rect(out.rect, color=None, fill=(0, 0, 0))
+    out.show_pdf_page(out.rect, src, 0, rotate=-angle)   # show_pdf_page ruota in senso antiorario
+    return out.get_pixmap(colorspace=pymupdf.csGRAY, alpha=False) if gray else out.get_pixmap(alpha=True)
+
+
 def rotate_pixmap(pix, angle):
-    """L'immagine ruotata di un multiplo di 90° in senso orario (negativo: antiorario), senza perdite."""
+    """L'immagine ruotata in senso orario (negativo: antiorario): senza perdite per i multipli di 90°."""
     angle %= 360
     if not angle:
         return pix
+    if angle % 90:
+        return rotate_any(pix, angle)
     if pix.n not in (1, 4):   # RGB: si aggiunge l'alpha, così ogni pixel occupa 4 byte e si sposta in blocco
         return pymupdf.Pixmap(rotate_pixmap(pymupdf.Pixmap(pix, 1), angle), 0)
     w, h = pix.width, pix.height
@@ -706,7 +757,7 @@ class StampEditor:
     """
 
     def __init__(self, parent, fonts, original, width_mm, title, name=None, rotation=0, source=None,
-                 source_rotation=0, remove_white=None, tolerance=10):
+                 source_rotation=0, remove_white=None, tolerance=10, rotate_step=90):
         self.result = None
         self.fonts = fonts
         self.original = stamp_pixmap(original)
@@ -738,8 +789,13 @@ class StampEditor:
 
         bar = ttk.Frame(body)
         bar.pack(fill=tk.X)
-        ttk.Button(bar, text="↺ Ruota a sinistra", command=lambda: self.rotate(-90)).pack(side=tk.LEFT)
-        ttk.Button(bar, text="Ruota a destra ↻", command=lambda: self.rotate(90)).pack(side=tk.LEFT, padx=(4, 14))
+        self.step_var = tk.StringVar(value=f"{rotate_step:g}")
+        ttk.Button(bar, text="↺ Ruota a sinistra", command=lambda: self.rotate(-self.rotate_step)).pack(side=tk.LEFT)
+        ttk.Spinbox(bar, from_=1, to=359, increment=5, width=4, textvariable=self.step_var).pack(side=tk.LEFT,
+                                                                                               padx=(4, 0))
+        ttk.Label(bar, text="°").pack(side=tk.LEFT)
+        ttk.Button(bar, text="Ruota a destra ↻", command=lambda: self.rotate(self.rotate_step)).pack(side=tk.LEFT,
+                                                                                                    padx=(4, 14))
         self.tool_var = tk.StringVar(value="pencil")
         for key, label in EDIT_TOOLS:
             ttk.Radiobutton(bar, text=label, value=key, variable=self.tool_var, style="Toolbutton",
@@ -812,6 +868,10 @@ class StampEditor:
     @property
     def tool(self):
         return self.tool_var.get()
+
+    @property
+    def rotate_step(self):
+        return parse_angle(self.step_var.get())
 
     def _state(self):
         return self.colors, self.mask, self.rotation, self.width_mm, self.edited, self.original, self.source
@@ -985,13 +1045,16 @@ class StampEditor:
 
     def rotate(self, angle):
         self._push()
-        w, h = self.colors.width, self.colors.height
-        self.colors = rotate_pixmap(self.colors, angle)
-        if self.mask is not None:
-            self.mask = rotate_pixmap(self.mask, angle)
-        self.rotation = (self.rotation + angle) % 360
-        if angle % 180:   # la larghezza nel PDF diventa l'altezza di prima: le misure vere non cambiano
-            self.width_mm = self.width_mm * h / w
+        mm_per_px = self.width_mm / self.colors.width   # le misure vere non cambiano: cambia l'ingombro
+        if angle % 90:   # angolo qualsiasi: l'immagine si allarga e gli angoli diventano trasparenti
+            self.colors, self.mask = split_alpha(rotate_pixmap(join_alpha(self.colors, self.mask or
+                                                                          opaque_mask(self.colors)), angle))
+        else:
+            self.colors = rotate_pixmap(self.colors, angle)
+            if self.mask is not None:
+                self.mask = rotate_pixmap(self.mask, angle)
+        self.rotation = round((self.rotation + angle) % 360, 3)
+        self.width_mm = self.colors.width * mm_per_px
         self._after_change()
 
     # ------------------------------------------------------------ immagini nuove
@@ -1180,7 +1243,8 @@ def rotate_placed_stamp(page, stamp, angle):
     """Ruota il timbro attorno al suo centro, di angle gradi in senso orario come lo si vede (multipli di 90)."""
     c = pymupdf.Point(0.5, 0.5) * stamp.cm
     turn = pymupdf.Matrix(-angle)   # nello spazio del PDF l'asse y va in su: l'orario è negativo
-    turn = pymupdf.Matrix(*(round(v) for v in (turn.a, turn.b, turn.c, turn.d)), 0, 0)
+    if not angle % 90:              # multipli di 90°: valori esatti, senza resti di arrotondamento
+        turn = pymupdf.Matrix(*(round(v) for v in (turn.a, turn.b, turn.c, turn.d)), 0, 0)
     to_center, back = pymupdf.Matrix(1, 0, 0, 1, -c.x, -c.y), pymupdf.Matrix(1, 0, 0, 1, c.x, c.y)
     _restamp(page, stamp, stamp.cm * to_center * turn * back)
 
@@ -1188,7 +1252,7 @@ def rotate_placed_stamp(page, stamp, angle):
 def stamp_view_angle(page, stamp):
     """Di quanti gradi, in senso orario, l'immagine del timbro appare ruotata nella pagina vista."""
     m = stamp.cm * page.transformation_matrix * page.rotation_matrix
-    return round(math.degrees(math.atan2(m.b, m.a)) / 90) * 90 % 360
+    return round(math.degrees(math.atan2(m.b, m.a)), 3) % 360
 
 
 def placed_stamp_image(page, stamp):
@@ -1456,6 +1520,135 @@ def text_band(line):
     return pymupdf.Rect(c - w, r.y0, c + w, r.y1)
 
 
+TEXT_SHOW_OPS = {b"Tj", b"TJ", b"'", b'"'}
+STROKE_TEXT_MODES = {1, 2, 5, 6}   # modi di resa (Tr) in cui il testo ha il contorno
+_NUMBER = re.compile(rb"[+-]?(?:\d+\.?\d*|\.\d+)")
+_SPACE, _DELIMITERS = b" \t\r\n\f\x00", b"()<>[]{}/%"
+_LINE_END = re.compile(rb"[\r\n]")
+_INLINE_IMAGE_END = re.compile(rb"\sEI(?=[\s/]|$)")
+
+
+def content_ops(data):
+    """Operatori di uno stream di contenuto PDF: (operatore, inizio dei suoi operandi, fine, operandi)."""
+    i, n, operands, start = 0, len(data), [], None
+    while i < n:
+        c = data[i]
+        if c in _SPACE:
+            i += 1
+            continue
+        if c == 0x25:   # % commento fino a fine riga
+            m = _LINE_END.search(data, i)
+            i = m.end() if m else n
+            continue
+        if start is None:
+            start = i
+        if c == 0x28:   # (stringa), con parentesi annidate e caratteri preceduti da «\»
+            depth, j = 1, i + 1
+            while j < n and depth:
+                if data[j] == 0x5C:
+                    j += 2
+                    continue
+                depth += {0x28: 1, 0x29: -1}.get(data[j], 0)
+                j += 1
+            operands.append(data[i:j])
+            i = j
+        elif data.startswith((b"<<", b">>"), i):
+            operands.append(data[i:i + 2])
+            i += 2
+        elif c == 0x3C:   # <stringa esadecimale>
+            j = data.find(b">", i)
+            j = n if j < 0 else j + 1
+            operands.append(data[i:j])
+            i = j
+        elif c in b"[]{}":
+            operands.append(data[i:i + 1])
+            i += 1
+        elif c in b")>":   # delimitatore spaiato: si salta
+            i += 1
+        else:
+            j = i + 1 if c == 0x2F else i
+            while j < n and data[j] not in _SPACE and data[j] not in _DELIMITERS:
+                j += 1
+            token, i = data[i:j], j
+            if c == 0x2F or _NUMBER.fullmatch(token) or token in (b"true", b"false", b"null"):
+                operands.append(token)
+                continue
+            if token == b"ID":   # immagine in linea: i suoi dati binari arrivano fino a EI
+                m = _INLINE_IMAGE_END.search(data, i + 1)
+                i = m.end() if m else n
+            yield token, start, i, operands
+            operands, start = [], None
+
+
+def stroked_text_ops(data):
+    """Scritte con il contorno dello stream: (inizio, fine dell'operatore, spessore della linea in quel momento)."""
+    width, mode, stack = 1.0, 0, []
+    for op, start, end, operands in content_ops(data):
+        try:
+            if op == b"q":
+                stack.append((width, mode))
+            elif op == b"Q":
+                width, mode = stack.pop() if stack else (1.0, 0)
+            elif op == b"w" and operands:
+                width = float(operands[-1])
+            elif op == b"Tr" and operands:
+                mode = int(float(operands[-1]))
+            elif op in TEXT_SHOW_OPS and mode in STROKE_TEXT_MODES:
+                yield start, end, width
+        except ValueError:
+            continue
+
+
+def stroked_spans(page):
+    """Testo con il contorno della pagina, in ordine di disegno: (testo, riquadro, spessore della linea)."""
+    return [("".join(chr(c[0]) for c in s["chars"]), pymupdf.Rect(s["bbox"]), s["linewidth"])
+            for s in page.get_texttrace() if s["type"] == 1 and s["linewidth"] is not None]
+
+
+def restore_stroke_widths(page, before, xrefs):
+    """Rimette lo spessore della linea al testo con il contorno dopo apply_redactions.
+
+    MuPDF (1.28) riscrive il contenuto senza lo spessore impostato per il testo a contorno (grassetto
+    simulato, scritte dei programmi CAD): quel testo prende lo spessore predefinito, o quello di un'altra
+    linea, e diventa una macchia nera. Davanti a ogni scritta si rimette lo spessore che aveva prima e,
+    subito dopo, quello che c'era: così le linee che seguono restano come le ha scritte MuPDF.
+    """
+    after = stroked_spans(page)
+    if not after:
+        return 0
+
+    def original_width(text, rect):
+        for t, r, w in before:
+            if t == text and abs(r.x0 - rect.x0) < 1 and abs(r.y0 - rect.y0) < 1:
+                return w
+        for t, r, w in before:   # scritta accorciata dalla cancellazione
+            if text and text in t and (r + (-1, -1, 1, 1)).contains(rect):
+                return w
+        return None
+
+    wanted = [original_width(t, r) for t, r, _ in after]
+    doc = page.parent
+    streams = [(x, doc.xref_stream(x) or b"") for x in xrefs]
+    ops = [list(stroked_text_ops(data)) for _, data in streams]
+    if sum(len(o) for o in ops) != len(after):   # es. testo in moduli (Form XObject): non si sa abbinarlo
+        return 0
+    fixed, k = 0, 0
+    for (xref, data), stream_ops in zip(streams, ops):
+        pieces, last = [], 0
+        for start, end, current in stream_ops:
+            w = wanted[k]
+            k += 1
+            if w is None or abs(w - current) < 1e-4:
+                continue
+            # spazi attorno: MuPDF scrive gli operatori attaccati («TD[(…)]TJ»)
+            pieces += [data[last:start], b" %.5g w " % w, data[start:end], b" %.5g w " % current]
+            last = end
+            fixed += 1
+        if pieces:
+            doc.update_stream(xref, b"".join(pieces) + data[last:])
+    return fixed
+
+
 def erase(page, areas, fill=False, images=pymupdf.PDF_REDACT_IMAGE_NONE,
           graphics=pymupdf.PDF_REDACT_LINE_ART_NONE):
     """Elimina davvero il testo nelle aree (pagina non ruotata); fill colora le aree, False no.
@@ -1467,6 +1660,7 @@ def erase(page, areas, fill=False, images=pymupdf.PDF_REDACT_IMAGE_NONE,
     doc = page.parent
     contents = page.get_contents()
     ours = {o.index for o in placed_objects(page)}
+    stroked = stroked_spans(page)   # per rimettere lo spessore al testo con il contorno (vedi restore_stroke_widths)
     saved = {}
     for i in ours:
         # "/fzImg0 Do", "/TPArial12ab 12 Tf", "/gs0 gs": le risorse usate dallo stream
@@ -1488,6 +1682,9 @@ def erase(page, areas, fill=False, images=pymupdf.PDF_REDACT_IMAGE_NONE,
         for key, value in saved.items():
             if doc.xref_get_key(page.xref, key)[0] == "null":
                 doc.xref_set_key(page.xref, key, value)
+    if stroked:
+        mine = {contents[i] for i in ours}
+        restore_stroke_widths(page, stroked, [x for x in page.get_contents() if x not in mine])
 
 
 def image_under(page, rect):
@@ -2082,7 +2279,12 @@ class MergeDialog:
 AUTHOR = "ing. Alessandro Candido"
 DONATION_EMAIL = "a75lex@libero.it"
 DONATION_URL = "https://www.paypal.com/"   # l'indirizzo si incolla come destinatario
-LICENSE_VERSION = 1   # va aumentato quando cambiano le condizioni: si richiede di accettarle di nuovo
+FEEDBACK_EMAIL = "ing.candido.alex@gmail.com"   # suggerimenti e segnalazioni
+# aggiornamenti: l'ultima versione pubblicata fra le «release» di GitHub (il setup si scarica da lì)
+UPDATE_REPO = "ingcandidoalex-wq/TimbroEasyPDF"
+UPDATE_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+DOWNLOAD_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
+LICENSE_VERSION = 2   # va aumentato quando cambiano le condizioni: si richiede di accettarle di nuovo
 # bozza delle condizioni d'uso: da far rivedere prima di distribuire il programma
 LICENSE_TEXT = f"""\
 CONDIZIONI DI LICENZA D'USO
@@ -2103,7 +2305,9 @@ i documenti prodotti prima di usarli o di inviarli e conserva una copia degli or
 derivanti dall'uso del programma o dal suo mancato funzionamento, compresa la perdita di dati.
 
 5. Dati. Il programma lavora sul tuo PC e non invia i documenti a nessuno. L'esportazione in Word usa
-Microsoft Word installato sul PC. L'archivio dei timbri resta dove lo salvi tu.
+Microsoft Word installato sul PC. L'archivio dei timbri resta dove lo salvi tu. Se l'opzione è attiva
+(menu ?), una volta al giorno il programma legge da GitHub il numero dell'ultima versione pubblicata:
+la richiesta non contiene documenti né dati personali.
 
 6. Componenti di terze parti, ciascuno soggetto alla propria licenza:
    • PyMuPDF / MuPDF – Artifex Software (AGPL-3.0 o licenza commerciale)
@@ -2160,6 +2364,7 @@ class AboutDialog:
 
         buttons = ttk.Frame(body)
         buttons.pack(fill=tk.X, pady=(14, 0))
+        ttk.Button(buttons, text="Scrivi all'autore…", command=lambda: FeedbackDialog(top)).pack(side=tk.LEFT)
         if must_accept:
             ttk.Button(buttons, text="Non accetto (esci)", command=top.destroy).pack(side=tk.RIGHT)
             ttk.Button(buttons, text="Accetto le condizioni", command=self._accept).pack(side=tk.RIGHT, padx=6)
@@ -2182,6 +2387,80 @@ class AboutDialog:
     def _accept(self):
         self.accepted = True
         self.top.destroy()
+
+
+def feedback_mailto(kind, message):
+    """Indirizzo mailto: per scrivere all'autore, con oggetto e testo pronti (più versione e Windows)."""
+    import platform
+    from urllib.parse import quote
+    body = f"{message.strip()[:1500]}\n\n---\n{APP_NAME} {APP_VERSION} · {platform.platform()}"
+    return f"mailto:{FEEDBACK_EMAIL}?subject={quote(f'{APP_NAME} {APP_VERSION} – {kind}')}&body={quote(body)}"
+
+
+class FeedbackDialog:
+    """Suggerimenti e segnalazioni: apre il programma di posta con il messaggio pronto per l'autore."""
+
+    KINDS = ("Suggerimento", "Segnalazione di un problema")
+
+    def __init__(self, parent):
+        top = self.top = tk.Toplevel(parent)
+        top.title("Scrivi all'autore")
+        top.transient(parent)
+        top.resizable(False, False)
+        body = ttk.Frame(top, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, wraplength=520, justify=tk.LEFT, text=(
+            f"Hai un'idea per migliorare {APP_NAME} o hai trovato un problema? Scrivilo qui: si apre il tuo "
+            f"programma di posta con il messaggio pronto per {FEEDBACK_EMAIL}.\nPer un problema descrivi cosa "
+            "stavi facendo e, se puoi, allega il PDF che lo causa (solo se non contiene dati riservati).")
+                  ).pack(anchor="w")
+        self.kind = tk.StringVar(value=self.KINDS[0])
+        row = ttk.Frame(body)
+        row.pack(anchor="w", pady=(10, 4))
+        for kind in self.KINDS:
+            ttk.Radiobutton(row, text=kind, value=kind, variable=self.kind).pack(side=tk.LEFT, padx=(0, 14))
+        self.text = tk.Text(body, width=64, height=7, wrap="word", font=("Segoe UI", 10), undo=True)
+        self.text.pack(fill=tk.X)
+        self.note = ttk.Label(body, foreground="#2e7d32", wraplength=520, justify=tk.LEFT)
+        self.note.pack(anchor="w", pady=(6, 0))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(buttons, text="Chiudi", command=top.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Copia l'indirizzo", command=self._copy).pack(side=tk.RIGHT, padx=6)
+        ttk.Button(buttons, text="Apri il programma di posta", command=self._mail).pack(side=tk.RIGHT)
+        top.bind("<Escape>", lambda e: top.destroy())
+        place_dialog(top, parent)
+        self.text.focus_set()
+
+    def _mail(self):
+        try:
+            os.startfile(feedback_mailto(self.kind.get(), self.text.get("1.0", "end-1c")))
+        except OSError:
+            self._copy()
+            self.note.configure(foreground="#a15c00", text="Su questo PC non c'è un programma di posta: l'indirizzo "
+                                f"{FEEDBACK_EMAIL} è stato copiato, incollalo nella posta che usi (es. Gmail).")
+            return
+        self.note.configure(foreground="#2e7d32", text="Messaggio pronto nel programma di posta: controllalo e invialo.")
+
+    def _copy(self):
+        self.top.clipboard_clear()
+        self.top.clipboard_append(FEEDBACK_EMAIL)
+        self.note.configure(foreground="#2e7d32", text=f"Indirizzo copiato: {FEEDBACK_EMAIL}")
+
+
+def version_tuple(text):
+    """«v2.10» -> (2, 10): le versioni si confrontano come numeri, non come testo."""
+    return tuple(int(n) for n in re.findall(r"\d+", str(text))[:3]) or (0,)
+
+
+def latest_release(timeout=8):
+    """(versione, pagina da cui scaricarla, novità) dell'ultima versione pubblicata; errore se non si legge."""
+    import urllib.request
+    request = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}",
+                                                          "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return str(data.get("tag_name") or "").lstrip("vV"), data.get("html_url") or DOWNLOAD_URL, data.get("body") or ""
 
 
 def enable_file_drop(widget, callback):
@@ -2862,11 +3141,15 @@ class StampLibrary:
         self.save()
 
     def rotate(self, item, angle):
-        """Ruota il timbro di angle gradi in senso orario; le misure vere nel PDF restano quelle."""
-        if angle % 180:
-            item["width_mm"] = round(item["width_mm"] * self.stamps[item["id"]].aspect, 1)
-        item["rotate"] = (item["rotate"] + angle) % 360
-        self.reprocess(item)
+        """Ruota il timbro di angle gradi in senso orario; le misure vere nel PDF restano quelle
+        (con un angolo qualsiasi cambia l'ingombro: l'immagine si allarga, gli angoli sono trasparenti)."""
+        stamp = self.stamps[item["id"]]
+        mm_per_px = item["width_mm"] / stamp.pixmap.width
+        item["rotate"] = round((item["rotate"] + angle) % 360, 3)
+        stamp.process(item["remove_white"], item["white_tolerance"], item["rotate"])
+        item["width_mm"] = round(stamp.pixmap.width * mm_per_px, 2)
+        self._version += 1
+        self.save()
 
     def reprocess(self, item):
         """Rifà l'immagine per timbrare dopo un cambio delle impostazioni dello sfondo o della rotazione."""
@@ -3110,6 +3393,7 @@ class App:
         if paths:
             root.after(100, lambda: [self.open_file(p) for p in paths])
         root.after(400, self._check_license)
+        self._update_job = root.after(5000, self.check_updates)
 
     @property
     def stamp_mode(self):
@@ -3699,13 +3983,20 @@ class App:
         for k, row in enumerate(rows):
             row.pack(fill=tk.X, pady=(6 if k == 0 else 4, 0))
         for row, buttons in zip(rows, ((("Aggiungi…", self.cmd_add_stamp), ("Crea firma…", self.cmd_create_signature)),
-                                       (("Modifica…", self.cmd_edit_stamp), ("Rinomina…", self.cmd_rename_stamp)),
-                                       (("↺ Ruota", lambda: self.rotate_stamp(-90)),
-                                        ("Ruota ↻", lambda: self.rotate_stamp(90)),
+                                       (("Modifica…", self.cmd_edit_stamp), ("Rinomina…", self.cmd_rename_stamp),
                                         ("Elimina", self.cmd_delete_stamp)))):
             for k, (text, cmd) in enumerate(buttons):
                 ttk.Button(row, text=text, command=cmd).pack(side=tk.LEFT, expand=True, fill=tk.X,
                                                              padx=(4 if k else 0, 0))
+        # rotazione: dei gradi scritti qui (ricordati), a sinistra o a destra
+        turn = rows[2]
+        ttk.Button(turn, text="↺", width=3, command=lambda: self.rotate_stamp(-self.rotate_step)).pack(side=tk.LEFT)
+        ttk.Label(turn, text="Ruota di").pack(side=tk.LEFT, padx=(6, 4))
+        self.rotate_step_var = tk.StringVar(value=f"{parse_angle(self.cfg['rotate_step'] or 90):g}")
+        ttk.Spinbox(turn, from_=1, to=359, increment=5, width=5, textvariable=self.rotate_step_var).pack(side=tk.LEFT)
+        ttk.Label(turn, text="°").pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Button(turn, text="↻", width=3, command=lambda: self.rotate_stamp(self.rotate_step)).pack(side=tk.LEFT)
+        self.rotate_step_var.trace_add("write", self._on_rotate_step)
 
         # tre colonne: impilate con il pannello a lato, affiancate con il pannello in alto/in basso
         lf = ttk.LabelFrame(parent, text=" Timbro selezionato ", padding=8)
@@ -3774,22 +4065,23 @@ class App:
         f.add_command(label="Apri… (anche più file, ognuno nella sua scheda)", accelerator="Ctrl+O",
                       command=self.cmd_open)
         f.add_command(label="Nuovo documento vuoto", accelerator="Ctrl+N", command=self.cmd_new)
-        f.add_command(label="Aggiungi PDF/immagini in fondo…", command=lambda: self.cmd_add(at_end=True))
-        f.add_command(label="Inserisci PDF/immagini dopo la pagina corrente…",
+        f.add_command(label="Aggiungi PDF/immagini in fondo…", accelerator="Ctrl+I",
+                      command=lambda: self.cmd_add(at_end=True))
+        f.add_command(label="Inserisci PDF/immagini dopo la pagina corrente…", accelerator="Ctrl+Maiusc+I",
                       command=lambda: self.cmd_add(at_end=False))
         f.add_separator()
         f.add_command(label="Salva con nome…", accelerator="Ctrl+S", command=self.cmd_save)
-        f.add_command(label="Estrai pagine selezionate…", command=self.cmd_extract)
-        f.add_command(label="Esporta in Word…", command=self.cmd_export_word)
+        f.add_command(label="Estrai pagine selezionate…", accelerator="Ctrl+E", command=self.cmd_extract)
+        f.add_command(label="Esporta in Word…", accelerator="Ctrl+Maiusc+W", command=self.cmd_export_word)
         f.add_separator()
-        f.add_command(label="Unisci tutte le schede in un nuovo documento", command=self.cmd_merge_tabs)
-        f.add_command(label="Dividi il documento in più file…", command=self.cmd_split)
+        f.add_command(label="Unisci le schede in un nuovo documento…", accelerator="Ctrl+U", command=self.cmd_merge_tabs)
+        f.add_command(label="Dividi il documento in più file…", accelerator="Ctrl+D", command=self.cmd_split)
         f.add_separator()
         f.add_command(label=f"Usa {APP_NAME} per aprire i PDF (programma predefinito)…", command=self.cmd_default_app)
         f.add_command(label=f"Togli {APP_NAME} dai programmi per i PDF…", command=self.cmd_remove_default_app)
         f.add_separator()
         f.add_command(label="Chiudi scheda", accelerator="Ctrl+W", command=self.close_tab)
-        f.add_command(label="Esci", command=self.quit)
+        f.add_command(label="Esci", accelerator="Ctrl+Q", command=self.quit)
         m.add_cascade(label="File", menu=f)
 
         e = tk.Menu(m, tearoff=False)
@@ -3801,8 +4093,8 @@ class App:
         e.add_command(label="Ruota tutte le pagine a destra", command=lambda: self.rotate(90, all_pages=True))
         e.add_command(label="Ruota tutte le pagine a sinistra", command=lambda: self.rotate(-90, all_pages=True))
         e.add_separator()
-        e.add_command(label="Sposta su", command=lambda: self.move_pages(-1))
-        e.add_command(label="Sposta giù", command=lambda: self.move_pages(1))
+        e.add_command(label="Sposta su", accelerator="Ctrl+↑", command=lambda: self.move_pages(-1))
+        e.add_command(label="Sposta giù", accelerator="Ctrl+↓", command=lambda: self.move_pages(1))
         e.add_command(label="Elimina pagine selezionate", accelerator="Canc", command=self.delete_pages)
         e.add_command(label="Seleziona tutte le pagine", accelerator="Ctrl+A", command=self.select_all)
         m.add_cascade(label="Pagine", menu=e)
@@ -3810,9 +4102,9 @@ class App:
         v = tk.Menu(m, tearoff=False)
         v.add_command(label="Zoom avanti", accelerator="Ctrl++", command=lambda: self._zoom_at(1.25))
         v.add_command(label="Zoom indietro", accelerator="Ctrl+-", command=lambda: self._zoom_at(1 / 1.25))
-        v.add_command(label="Adatta alla larghezza", command=lambda: self.set_zoom_mode("width"))
+        v.add_command(label="Adatta alla larghezza", accelerator="Ctrl+2", command=lambda: self.set_zoom_mode("width"))
         v.add_command(label="Pagina intera", accelerator="Ctrl+0", command=lambda: self.set_zoom_mode("page"))
-        v.add_command(label="Dimensione reale (100%)", command=self.set_real_size)
+        v.add_command(label="Dimensione reale (100%)", accelerator="Ctrl+1", command=self.set_real_size)
         v.add_command(label="Vista d'insieme delle miniature di tutti i PDF", accelerator="F4",
                       command=self.toggle_overview)
         v.add_separator()
@@ -3823,34 +4115,48 @@ class App:
         m.add_cascade(label="Visualizza", menu=v)
 
         x = tk.Menu(m, tearoff=False)
-        x.add_command(label="Modifica testo", command=lambda: self.set_tool("edit_text"))
-        x.add_command(label="Aggiungi testo", command=lambda: self.set_tool("add_text"))
-        x.add_command(label="Bianchetto (copri con il bianco)", command=lambda: self.set_tool("whiteout"))
-        x.add_command(label="Oscura (copri con il nero)", command=lambda: self.set_tool("blackout"))
+        x.add_command(label="Modifica testo", accelerator="Ctrl+M", command=lambda: self.set_tool("edit_text"))
+        x.add_command(label="Aggiungi testo", accelerator="Ctrl+T", command=lambda: self.set_tool("add_text"))
+        x.add_command(label="Bianchetto (copri con il bianco)", accelerator="Ctrl+B",
+                      command=lambda: self.set_tool("whiteout"))
+        x.add_command(label="Oscura (copri con il nero)", accelerator="Ctrl+Maiusc+B",
+                      command=lambda: self.set_tool("blackout"))
         x.add_separator()
-        x.add_command(label="Riconosci testo (OCR)…", command=self.cmd_ocr)
+        x.add_command(label="Riconosci testo (OCR)…", accelerator="Ctrl+Maiusc+O", command=self.cmd_ocr)
         x.add_command(label="Cerca", accelerator="Ctrl+F", command=self.focus_find)
         m.add_cascade(label="Testo", menu=x)
 
         t = tk.Menu(m, tearoff=False)
-        t.add_command(label="Aggiungi timbro da immagine…", command=self.cmd_add_stamp)
-        t.add_command(label="Crea firma (disegnata o scritta)…", command=self.cmd_create_signature)
-        t.add_command(label="Modifica timbro selezionato (ruota, matita, gomma, testo)…",
+        t.add_command(label="Aggiungi timbro da immagine…", accelerator="Ctrl+Maiusc+N", command=self.cmd_add_stamp)
+        t.add_command(label="Crea firma (disegnata o scritta)…", accelerator="Ctrl+Maiusc+F",
+                      command=self.cmd_create_signature)
+        t.add_command(label="Modifica timbro selezionato (ruota, matita, gomma, testo)…", accelerator="Ctrl+Maiusc+M",
                       command=self.cmd_edit_stamp)
-        t.add_command(label="Ruota timbro selezionato a destra", command=lambda: self.rotate_stamp(90))
-        t.add_command(label="Ruota timbro selezionato a sinistra", command=lambda: self.rotate_stamp(-90))
-        t.add_command(label="Rinomina timbro selezionato…", command=self.cmd_rename_stamp)
-        t.add_command(label="Elimina timbro selezionato", command=self.cmd_delete_stamp)
+        t.add_command(label="Ruota timbro selezionato a destra (dei gradi indicati)", accelerator="Ctrl+Maiusc+→",
+                      command=lambda: self.rotate_stamp(self.rotate_step))
+        t.add_command(label="Ruota timbro selezionato a sinistra (dei gradi indicati)", accelerator="Ctrl+Maiusc+←",
+                      command=lambda: self.rotate_stamp(-self.rotate_step))
+        t.add_command(label="Rinomina timbro selezionato…", accelerator="F2", command=self.cmd_rename_stamp)
+        t.add_command(label="Elimina timbro selezionato", accelerator="Ctrl+Maiusc+Canc", command=self.cmd_delete_stamp)
         t.add_separator()
-        t.add_command(label="Attiva/disattiva modalità timbro", accelerator="T", command=self.toggle_stamp_mode)
-        t.add_command(label="Ripeti timbro su tutte/selezionate", command=self.repeat_last_stamp)
+        t.add_command(label="Attiva/disattiva modalità timbro", accelerator="T  o  Ctrl+Maiusc+T",
+                      command=self.toggle_stamp_mode)
+        t.add_command(label="Ripeti timbro su tutte/selezionate", accelerator="Ctrl+Maiusc+P",
+                      command=self.repeat_last_stamp)
         t.add_separator()
-        t.add_command(label="Archivio dei timbri (posizione, altri PC, password)…", command=self.cmd_archive)
+        t.add_command(label="Archivio dei timbri (posizione, altri PC, password)…", accelerator="Ctrl+Maiusc+A",
+                      command=self.cmd_archive)
         m.add_cascade(label="Timbro", menu=t)
 
         h = tk.Menu(m, tearoff=False)
         h.add_command(label="Guida rapida", accelerator="F1", command=self.show_help)
-        h.add_command(label="Guida illustrata (PDF)", command=self.open_guide)
+        h.add_command(label="Guida illustrata (PDF)", accelerator="Maiusc+F1", command=self.open_guide)
+        h.add_separator()
+        h.add_command(label="Scrivi all'autore: suggerimenti e segnalazioni…", command=self.cmd_feedback)
+        h.add_command(label="Controlla gli aggiornamenti…", command=lambda: self.check_updates(manual=True))
+        self.auto_update_var = tk.BooleanVar(value=self.cfg["check_updates"] is not False)
+        h.add_checkbutton(label="Controlla gli aggiornamenti all'avvio", variable=self.auto_update_var,
+                          command=lambda: self.cfg.__setitem__("check_updates", self.auto_update_var.get()))
         h.add_separator()
         h.add_command(label="Informazioni, licenza e donazioni…", command=self.show_about)
         m.add_cascade(label="?", menu=h)
@@ -3859,27 +4165,59 @@ class App:
     def _bind_keys(self):
         typing = (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox, ttk.Scale)
 
+        def in_main_window(e, skip_when_typing):
+            # solo nella finestra principale, non nelle finestre di dialogo
+            if not hasattr(e.widget, "winfo_toplevel") or e.widget.winfo_toplevel() is not self.root:
+                return False
+            return not (skip_when_typing and isinstance(e.widget, typing))
+
         def bind(seq, fn, skip_when_typing=False):
             def handler(e):
-                # solo nella finestra principale, non nelle finestre di dialogo
-                if not hasattr(e.widget, "winfo_toplevel") or e.widget.winfo_toplevel() is not self.root:
-                    return None
-                if skip_when_typing and isinstance(e.widget, typing):
+                if not in_main_window(e, skip_when_typing):
                     return None
                 fn()
                 return "break"
             self.root.bind_all(seq, handler)
 
-        bind("<Control-o>", self.cmd_open)
-        bind("<Control-n>", self.cmd_new)
-        bind("<Control-w>", self.close_tab)
-        bind("<Control-f>", self.focus_find)
-        bind("<Control-s>", self.cmd_save)
-        bind("<Control-z>", self.undo, True)
-        bind("<Control-y>", self.redo, True)
-        bind("<Control-r>", lambda: self.rotate(90))
-        bind("<Control-R>", lambda: self.rotate(-90))
-        bind("<Control-a>", self.select_all, True)
+        def ctrl(letter, fn=None, shifted=None, skip_when_typing=False):
+            """Ctrl+lettera e Ctrl+Maiusc+lettera: conta il tasto Maiusc, non la lettera maiuscola
+            (con il Bloc Maiusc acceso Ctrl+O deve aprire, non avviare l'OCR)."""
+            def handler(e):
+                target = shifted if e.state & 0x0001 else fn
+                if target is None or not in_main_window(e, skip_when_typing):
+                    return None
+                target()
+                return "break"
+            for seq in (f"<Control-{letter}>", f"<Control-{letter.upper()}>"):
+                self.root.bind_all(seq, handler)
+
+        ctrl("a", self.select_all, self.cmd_archive, skip_when_typing=True)
+        ctrl("b", lambda: self.set_tool("whiteout"), lambda: self.set_tool("blackout"))
+        ctrl("d", self.cmd_split)
+        ctrl("e", self.cmd_extract)
+        ctrl("f", self.focus_find, self.cmd_create_signature)
+        ctrl("i", lambda: self.cmd_add(at_end=True), lambda: self.cmd_add(at_end=False))
+        ctrl("m", lambda: self.set_tool("edit_text"), self.cmd_edit_stamp)
+        ctrl("n", self.cmd_new, self.cmd_add_stamp)
+        ctrl("o", self.cmd_open, self.cmd_ocr)
+        ctrl("p", None, self.repeat_last_stamp)
+        ctrl("q", self.quit)
+        ctrl("r", lambda: self.rotate(90), lambda: self.rotate(-90))
+        ctrl("s", self.cmd_save)
+        ctrl("t", lambda: self.set_tool("add_text"), self.toggle_stamp_mode)
+        ctrl("u", self.cmd_merge_tabs)
+        ctrl("w", self.close_tab, self.cmd_export_word)
+        ctrl("y", self.redo, skip_when_typing=True)
+        ctrl("z", self.undo, skip_when_typing=True)
+        bind("<Control-Up>", lambda: self.move_pages(-1), True)
+        bind("<Control-Down>", lambda: self.move_pages(1), True)
+        bind("<Control-Shift-Right>", lambda: self.rotate_stamp(self.rotate_step), True)
+        bind("<Control-Shift-Left>", lambda: self.rotate_stamp(-self.rotate_step), True)
+        bind("<Control-Shift-Delete>", self.cmd_delete_stamp, True)
+        bind("<F2>", self.cmd_rename_stamp)
+        bind("<Shift-F1>", self.open_guide)
+        bind("<Control-Key-1>", self.set_real_size)
+        bind("<Control-Key-2>", lambda: self.set_zoom_mode("width"))
         bind("<Prior>", self.prev_page)
         bind("<Next>", self.next_page)
         bind("<Left>", self.prev_page, True)
@@ -5239,9 +5577,10 @@ class App:
             menu.add_command(label="Modifica testo…", command=lambda: self.edit_text_box(hit))
             menu.add_command(label="Elimina questo testo", command=self.delete_selected_stamp)
         else:
+            step = self.rotate_step
             menu.add_command(label="Modifica questo timbro…", command=lambda: self.edit_placed_stamp(hit))
-            menu.add_command(label="Ruota a destra", command=lambda: self.rotate_placed(hit, 90))
-            menu.add_command(label="Ruota a sinistra", command=lambda: self.rotate_placed(hit, -90))
+            menu.add_command(label=f"Ruota a destra di {step:g}°", command=lambda: self.rotate_placed(hit, step))
+            menu.add_command(label=f"Ruota a sinistra di {step:g}°", command=lambda: self.rotate_placed(hit, -step))
             menu.add_separator()
             menu.add_command(label="Elimina questo timbro", command=self.delete_selected_stamp)
         menu.tk_popup(event.x_root, event.y_root)
@@ -5296,7 +5635,8 @@ class App:
         rotate_placed_stamp(self.doc[self.current], stamp, angle)
         self.sel_stamp = stamp.index
         self._doc_changed(pages=[self.current])
-        self.status(f"Timbro ruotato {'a destra' if angle > 0 else 'a sinistra'}. (Ctrl+Z per annullare)")
+        self.status(f"Timbro ruotato di {abs(angle):g}° {'a destra' if angle > 0 else 'a sinistra'}. "
+                    "(Ctrl+Z per annullare)")
 
     def edit_placed_stamp(self, stamp):
         """Modifica un timbro già apposto (solo questo): ruota, ritocca e, per le firme create nel
@@ -5311,9 +5651,11 @@ class App:
         source, baked = stamp_source(self.doc, xref) or self._gallery_source(pix) or (None, 0)
         StampEditor.last_image_dir = self._dir("image")
         editor = StampEditor(self.root, self.fonts, rotate_pixmap(pix, angle), stamp.rect.width / MM,
-                             "Modifica timbro sulla pagina", source=source, source_rotation=(baked + angle) % 360)
+                             "Modifica timbro sulla pagina", source=source, source_rotation=(baked + angle) % 360,
+                             rotate_step=self.rotate_step)
         self.root.wait_window(editor.top)
         self._remember_dir("image", StampEditor.last_image_dir)
+        self.rotate_step_var.set(f"{editor.rotate_step:g}")
         r = editor.result
         if not r:
             return
@@ -5899,9 +6241,10 @@ class App:
         editor = StampEditor(self.root, self.fonts, pymupdf.Pixmap(self.stamp.original_png), item["width_mm"],
                              f"Modifica timbro «{item['name']}»", name=item["name"], rotation=item["rotate"],
                              source=item.get("source"), remove_white=item["remove_white"],
-                             tolerance=item["white_tolerance"])
+                             tolerance=item["white_tolerance"], rotate_step=self.rotate_step)
         self.root.wait_window(editor.top)
         self._remember_dir("image", StampEditor.last_image_dir)
+        self.rotate_step_var.set(f"{editor.rotate_step:g}")
         if not editor.result:
             return
         try:
@@ -5913,15 +6256,25 @@ class App:
         self.status(f"Timbro «{item['name']}» modificato. I timbri già apposti nei PDF restano com'erano "
                     "(si modificano con il tasto destro sul timbro).")
 
+    @property
+    def rotate_step(self):
+        """Gradi di cui ruotano i pulsanti ↺ ↻ (scritti nel pannello dei timbri)."""
+        return parse_angle(self.rotate_step_var.get())
+
+    def _on_rotate_step(self, *_):
+        value = parse_angle(self.rotate_step_var.get(), None)
+        if value is not None:
+            self.cfg["rotate_step"] = value
+
     def rotate_stamp(self, angle):
-        """Ruota il timbro selezionato della galleria (vale per i timbri apposti da ora in poi)."""
+        """Ruota il timbro selezionato della galleria di angle gradi (vale per i timbri apposti da ora in poi)."""
         item = self.stamp_item
         if not item or not self._library_ready():
             return
         self.library.rotate(item, angle)
         self._stamp_image_changed(item)
-        self.status(f"«{item['name']}» ruotato {'a destra' if angle > 0 else 'a sinistra'}: vale per i timbri che "
-                    "apponi da ora in poi.")
+        self.status(f"«{item['name']}» ruotato di {abs(angle):g}° {'a destra' if angle > 0 else 'a sinistra'}: vale "
+                    "per i timbri che apponi da ora in poi.")
 
     def _stamp_image_changed(self, item):
         for tab in self.tabs:   # nei documenti aperti la nuova immagine va inserita da capo
@@ -6049,9 +6402,10 @@ class App:
             return
         self.select_stamp(k)
         menu = tk.Menu(self.root, tearoff=False)
+        step = self.rotate_step
         menu.add_command(label="Modifica… (ruota, matita, gomma, testo)", command=self.cmd_edit_stamp)
-        menu.add_command(label="Ruota a destra", command=lambda: self.rotate_stamp(90))
-        menu.add_command(label="Ruota a sinistra", command=lambda: self.rotate_stamp(-90))
+        menu.add_command(label=f"Ruota a destra di {step:g}°", command=lambda: self.rotate_stamp(step))
+        menu.add_command(label=f"Ruota a sinistra di {step:g}°", command=lambda: self.rotate_stamp(-step))
         menu.add_separator()
         menu.add_command(label="Rinomina…", command=self.cmd_rename_stamp)
         menu.add_command(label="Elimina", command=self.cmd_delete_stamp)
@@ -6262,6 +6616,56 @@ class App:
     def show_about(self):
         dialog = AboutDialog(self.root)
         self.root.wait_window(dialog.top)
+
+    def cmd_feedback(self):
+        FeedbackDialog(self.root)
+
+    def check_updates(self, manual=False):
+        """C'è una versione più recente? All'avvio una volta al giorno (se l'opzione è attiva), in sottofondo."""
+        today = time.strftime("%Y-%m-%d")
+        if not UPDATE_URL or (not manual and (self.cfg["check_updates"] is False
+                                              or self.cfg["update_checked"] == today)):
+            return
+        result = {}
+
+        def work():
+            try:
+                result["release"] = latest_release()
+            except Exception as exc:   # niente rete, nessuna versione pubblicata…
+                result["error"] = exc
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        if manual:
+            self.status("Controllo degli aggiornamenti…")
+
+        def wait():
+            if worker.is_alive():
+                self.root.after(300, wait)
+            else:
+                self._updates_checked(result, manual, today)
+        self.root.after(300, wait)
+
+    def _updates_checked(self, result, manual, today):
+        self.cfg["update_checked"] = today
+        if "error" in result:
+            if manual:
+                missing = getattr(result["error"], "code", None) == 404
+                messagebox.showinfo(APP_NAME, "Non ci sono ancora versioni pubblicate da controllare." if missing else
+                                    f"Non è stato possibile controllare gli aggiornamenti:\n{result['error']}\n\n"
+                                    "Controlla la connessione a Internet.", parent=self.root)
+            return
+        version, url, notes = result["release"]
+        if version_tuple(version) <= version_tuple(APP_VERSION):
+            if manual:
+                messagebox.showinfo(APP_NAME, f"Hai già l'ultima versione ({APP_VERSION}).", parent=self.root)
+            return
+        notes = notes.strip()
+        if messagebox.askyesno(APP_NAME, f"È disponibile la versione {version} di {APP_NAME} (tu hai la {APP_VERSION})."
+                               + (f"\n\nNovità:\n{notes[:700]}" if notes else "")
+                               + "\n\nVuoi aprire la pagina da cui scaricarla?", parent=self.root):
+            import webbrowser
+            webbrowser.open(url)
 
     def _check_license(self):
         """Al primo avvio (e quando cambiano) le condizioni d'uso vanno lette e accettate."""

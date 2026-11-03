@@ -8,3 +8,7 @@ PROGRAMMA = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROGRAMMA))
 WORK = Path(tempfile.gettempdir()) / "TimbroEasyPDF-test"
 WORK.mkdir(exist_ok=True)
+
+import timbro_pdf  # noqa: E402
+
+timbro_pdf.UPDATE_URL = ""   # durante i test il programma non controlla gli aggiornamenti su Internet

@@ -350,7 +350,8 @@ tp.tk.Menu.tk_popup = lambda self, *a, **k: labels.extend(self.entrycget(i, "lab
 r = stamp.rect
 cx, cy = app._canvas_rect(r)[0] + 10 - app.view.canvasx(0), app._canvas_rect(r)[1] + 10 - app.view.canvasy(0)
 app._on_view_menu(type("E", (), {"x": cx, "y": cy, "x_root": 0, "y_root": 0})())
-assert labels == ["Modifica questo timbro…", "Ruota a destra", "Ruota a sinistra", "Elimina questo timbro"], labels
+assert labels == ["Modifica questo timbro…", "Ruota a destra di 90°", "Ruota a sinistra di 90°",
+                  "Elimina questo timbro"], labels
 tp.tk.Menu.tk_popup = real_popup
 
 # modifica del timbro apposto sulla pagina ruotata: resta dov'era, cambia solo lui

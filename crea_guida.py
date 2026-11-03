@@ -31,6 +31,7 @@ tp.CONFIG_DIR, tp.CONFIG_FILE = WORK / "config", WORK / "config" / "config.json"
 (WORK / "config").mkdir()
 tp.STAMPS_DIR, tp.OLD_STAMP_FILE = WORK / "config" / "timbri", WORK / "config" / "timbro.png"
 tp.LICENSE_VERSION = 0
+tp.UPDATE_URL = ""   # niente controllo degli aggiornamenti mentre si fanno le schermate
 tp.tk.Menu.tk_popup = lambda self, *a, **k: None
 for name in ("showinfo", "showwarning", "showerror"):
     setattr(tp.messagebox, name, lambda *a, **k: None)
@@ -365,7 +366,8 @@ Lo stesso vale per una data o una dicitura: scrivila con il font che preferisci.
     ("Modificare e ruotare i timbri", "editor_timbro", 85, """
 <p><b>Modifica…</b> (o doppio clic nella galleria) apre il timbro, di qualunque tipo:</p>
 <ul>
-<li><b>Ruota a sinistra / a destra</b>: le misure vere nel PDF restano le stesse;</li>
+<li><b>Ruota a sinistra / a destra</b> dei gradi scritti fra i due pulsanti (90, oppure 10, 45…): le misure
+vere nel PDF restano le stesse; con angoli diversi da 90° gli angoli dell'immagine restano trasparenti;</li>
 <li><b>Matita</b>, <b>Evidenziatore</b> (semitrasparente) e <b>Gomma</b>, con colore e spessore;</li>
 <li><b>Testo</b>: clicca dove scrivere e scegli font, dimensione e colore, vedendo subito il risultato;</li>
 <li><b>Apri con l'editor di immagini…</b> lo apre nel programma di Windows (di solito Paint): quando lo
@@ -374,8 +376,9 @@ salvi lì, nella finestra si aggiorna da solo;</li>
 </ul>
 <p>Le firme create nel programma si possono anche <b>riscrivere</b> o <b>ridisegnare</b>; dopo un ritocco
 con matita, gomma o testo restano un'immagine. Annulla e Ripristina (Ctrl+Z, Ctrl+Y) tornano indietro.
-I pulsanti ↺ e ↻ sotto la galleria ruotano al volo il timbro scelto. Le modifiche valgono per i timbri
-apposti da quel momento in poi.</p>"""),
+I pulsanti ↺ e ↻ sotto la galleria ruotano al volo il timbro scelto dei gradi indicati accanto («Ruota di
+… °»); gli stessi gradi valgono per i timbri già sulla pagina (tasto destro). Le modifiche valgono per i
+timbri apposti da quel momento in poi.</p>"""),
     ("Correggere il testo del PDF", "modifica_testo", 100, """
 <p>Con <b>Modifica testo</b> (1) le righe si colorano passandoci sopra: clicca quella da correggere.
 Il vecchio testo viene eliminato davvero e il nuovo è scritto nello stesso punto, con il font più simile.
@@ -423,20 +426,35 @@ Ogni PC può ricordarla, custodita da Windows per il tuo utente.</li>
 </ul>"""),
     ("Informazioni e licenza", "licenza", 65, """
 <p>Dal menu <b>?</b> trovi le condizioni d'uso, l'autore e il modo per sostenere il programma.
+<b>Scrivi all'autore</b> apre la posta con un messaggio pronto per inviare suggerimenti o segnalare un
+problema. Una volta al giorno il programma controlla se è uscita una versione nuova e, se c'è, propone di
+aprire la pagina da cui scaricarla (si disattiva dallo stesso menu).
 <b>File › Usa {APP} per aprire i PDF</b> lo registra fra i programmi per i PDF e apre la pagina
 di Windows dove sceglierlo: i PDF aperti con doppio clic arrivano come nuove schede.</p>"""),
 ]
 
 SHORTCUTS = """
+<p>Le scorciatoie sono scritte anche accanto alle voci dei menu.</p>
 <table>
 <tr><td>Ctrl+O</td><td>Apri (anche più PDF)</td><td>Ctrl+N</td><td>Nuovo documento</td></tr>
-<tr><td>Ctrl+S</td><td>Salva</td><td>Ctrl+W</td><td>Chiudi la scheda</td></tr>
+<tr><td>Ctrl+I</td><td>Aggiungi PDF/immagini in fondo</td><td>Ctrl+Maiusc+I</td><td>Inserisci dopo la pagina corrente</td></tr>
+<tr><td>Ctrl+S</td><td>Salva</td><td>Ctrl+E</td><td>Estrai le pagine selezionate</td></tr>
+<tr><td>Ctrl+U</td><td>Unisci le schede</td><td>Ctrl+D</td><td>Dividi il documento</td></tr>
+<tr><td>Ctrl+Maiusc+W</td><td>Esporta in Word</td><td>Ctrl+W</td><td>Chiudi la scheda</td></tr>
 <tr><td>Ctrl+Z / Ctrl+Y</td><td>Annulla / Ripristina</td><td>Ctrl+Tab</td><td>Scheda successiva</td></tr>
-<tr><td>Ctrl+R</td><td>Ruota a destra</td><td>Ctrl+Maiusc+R</td><td>Ruota a sinistra</td></tr>
+<tr><td>Ctrl+R</td><td>Ruota la pagina a destra</td><td>Ctrl+Maiusc+R</td><td>Ruota la pagina a sinistra</td></tr>
+<tr><td>Ctrl+↑ / Ctrl+↓</td><td>Sposta le pagine</td><td>Canc</td><td>Elimina timbro o pagine</td></tr>
+<tr><td>Ctrl+0 / 1 / 2</td><td>Pagina intera / 100% / larghezza</td><td>Ctrl+rotellina</td><td>Zoom</td></tr>
+<tr><td>Ctrl+M</td><td>Modifica testo</td><td>Ctrl+T</td><td>Aggiungi testo</td></tr>
+<tr><td>Ctrl+B</td><td>Bianchetto</td><td>Ctrl+Maiusc+B</td><td>Oscura</td></tr>
+<tr><td>Ctrl+Maiusc+O</td><td>Riconosci testo (OCR)</td><td>Ctrl+F</td><td>Cerca</td></tr>
 <tr><td>T</td><td>Modalità timbro</td><td>1–9</td><td>Scegli il timbro</td></tr>
-<tr><td>Canc</td><td>Elimina timbro o pagine</td><td>Esc</td><td>Esci dallo strumento</td></tr>
-<tr><td>Ctrl+F</td><td>Cerca</td><td>F4</td><td>Vista d'insieme</td></tr>
-<tr><td>PagSu / PagGiù</td><td>Pagina precedente / successiva</td><td>Ctrl+rotellina</td><td>Zoom</td></tr>
+<tr><td>Ctrl+Maiusc+N</td><td>Timbro da immagine</td><td>Ctrl+Maiusc+F</td><td>Crea firma</td></tr>
+<tr><td>Ctrl+Maiusc+M</td><td>Modifica il timbro</td><td>Ctrl+Maiusc+→ / ←</td><td>Ruota il timbro</td></tr>
+<tr><td>F2</td><td>Rinomina il timbro</td><td>Ctrl+Maiusc+P</td><td>Ripeti il timbro su tutte</td></tr>
+<tr><td>F4</td><td>Vista d'insieme</td><td>Esc</td><td>Esci dallo strumento</td></tr>
+<tr><td>F1</td><td>Guida rapida</td><td>Maiusc+F1</td><td>Questa guida</td></tr>
+<tr><td>PagSu / PagGiù</td><td>Pagina precedente / successiva</td><td>Ctrl+Q</td><td>Esci</td></tr>
 </table>"""
 
 CSS = """
