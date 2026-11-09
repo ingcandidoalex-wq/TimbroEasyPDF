@@ -32,7 +32,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -45,11 +45,15 @@ GUIDE_NAME = f"Guida {APP_NAME}.pdf"          # guida illustrata, accanto al pro
 MM = 72 / 25.4                # punti PDF in un millimetro
 THUMB_W, THUMB_H = 130, 170    # riquadro massimo delle miniature (px)
 PAD = 16                       # margine attorno alla pagina nella vista
+CONT_GAP = 14                  # spazio verticale tra le pagine nello scorrimento continuo
+CONT_CACHE = 12                # pagine tenute in cache attorno a quella visibile (continuo)
 PREVIEW_W, PREVIEW_H = 210, 110
 TILE_W, TILE_H = 97, 62        # riquadri della galleria dei timbri
 GALLERY_H = 2 * (TILE_H + 26) + 6
 MAX_STAMP_PX = 1600            # lato massimo dell'immagine del timbro salvata
 MAX_RENDER_PX = 40_000_000     # limite di pixel per il rendering della pagina
+ICON_FONT = Path(r"C:\Windows\Fonts\segmdl2.ttf")   # font di icone di Windows (Segoe MDL2 Assets)
+ICON_COLOR = "#303030"
 UNDO_LIMIT = 30
 UNDO_MAX_BYTES = 400 * 1024 * 1024
 OCR_DPI = 300                  # risoluzione a cui si legge la pagina per l'OCR
@@ -127,6 +131,15 @@ Timbro ▸ Archivio dei timbri: spostalo in una cartella condivisa (es. Dropbox)
 sugli altri PC scegli «Usa un archivio esistente»; proteggilo con una password
 (cifratura AES-256), che ogni PC può ricordare.
 
+SCORRIMENTO E STAMPA
+Dal menu Visualizza scegli come scorre la pagina principale: «Pagina singola»
+(una pagina per volta) o «Scorrimento continuo» (tutte le pagine una dietro
+l'altra): scorrendo, la pagina che occupa più di metà schermo diventa quella
+corrente. Nel continuo la vista è di sola lettura: appena usi uno strumento
+(timbro, testo, bianchetto…) torna alla pagina singola su quella pagina.
+File ▸ Stampa… (Ctrl+P): scegli stampante, pagine (tutte, corrente o un
+intervallo) e numero di copie.
+
 VISTA D'INSIEME E FILE TRASCINATI
 F4 (o «Vista d'insieme»): le miniature di tutti i PDF aperti, una colonna per
 PDF; trascina le pagine fra le colonne per copiarle. Doppio clic per aprirne una.
@@ -157,8 +170,12 @@ TESTO
   eliminato davvero e quello nuovo scritto nello stesso punto. Nelle
   scansioni spunta «Copri con il bianco lo sfondo».
 • Aggiungi testo: clicca dove vuoi scrivere. Mentre scrivi il testo si vede
-  già sulla pagina, con il font, la dimensione e il colore scelti. Le caselle
+  già sulla pagina, con il font, la dimensione e il colore scelti. Con i
+  pulsanti G, C e S lo rendi grassetto, corsivo o sottolineato. Le caselle
   si spostano trascinandole, doppio clic per correggerle, Canc per eliminarle.
+• Seleziona e copia: senza strumenti attivi, trascina il mouse sul testo della
+  pagina (o doppio clic su una parola) per selezionarlo, poi Ctrl+C per copiarlo
+  negli appunti.
 • Le finestre per aprire, salvare, esportare e scegliere le immagini dei
   timbri ripartono ognuna dall'ultima cartella usata per quell'operazione.
 • Bianchetto / Oscura: trascina un rettangolo; quanto c'è sotto viene
@@ -174,14 +191,14 @@ una versione nuova (si può disattivare dal menu ?).
 
 SCORCIATOIE (sono scritte anche accanto alle voci dei menu)
 File    Ctrl+O apri · Ctrl+N nuovo · Ctrl+I aggiungi in fondo · Ctrl+Maiusc+I inserisci
-        Ctrl+S salva · Ctrl+E estrai pagine · Ctrl+Maiusc+W Word · Ctrl+U unisci
-        Ctrl+D dividi · Ctrl+W chiudi scheda · Ctrl+Tab scheda dopo · Ctrl+Q esci
+        Ctrl+S salva · Ctrl+E estrai pagine · Ctrl+Maiusc+W Word · Ctrl+P stampa
+        Ctrl+U unisci · Ctrl+D dividi · Ctrl+W chiudi scheda · Ctrl+Tab scheda dopo · Ctrl+Q esci
 Pagine  Ctrl+Z annulla · Ctrl+Y ripristina · Ctrl+R / Ctrl+Maiusc+R ruota
         Ctrl+↑ / Ctrl+↓ sposta · Canc elimina · Ctrl+A tutte · PagSu/PagGiù
 Vista   Ctrl+0 pagina intera · Ctrl+1 100% · Ctrl+2 larghezza · Ctrl+rotella zoom
         F4 vista d'insieme · trascina per spostare la vista
 Testo   Ctrl+M modifica · Ctrl+T aggiungi · Ctrl+B bianchetto · Ctrl+Maiusc+B oscura
-        Ctrl+Maiusc+O OCR · Ctrl+F cerca
+        Ctrl+Maiusc+O OCR · Ctrl+F cerca · Ctrl+C copia il testo selezionato
 Timbro  T modalità timbro · 1–9 scegli · Ctrl+Maiusc+N da immagine · Ctrl+Maiusc+F firma
         Ctrl+Maiusc+M modifica · Ctrl+Maiusc+→ / ← ruota · F2 rinomina
         Ctrl+Maiusc+P ripeti su tutte · Ctrl+Maiusc+A archivio
@@ -196,6 +213,111 @@ def set_dpi_awareness():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
+
+
+def list_printers():
+    """(stampante predefinita, [nomi delle stampanti installate]) su Windows."""
+    import ctypes
+    from ctypes import wintypes
+    winspool = ctypes.WinDLL("winspool.drv")
+    default = ""
+    size = wintypes.DWORD(0)
+    winspool.GetDefaultPrinterW(None, ctypes.byref(size))
+    if size.value:
+        buf = ctypes.create_unicode_buffer(size.value)
+        if winspool.GetDefaultPrinterW(buf, ctypes.byref(size)):
+            default = buf.value
+    names, flags = [], 0x00000002 | 0x00000004   # PRINTER_ENUM_LOCAL | CONNECTIONS
+    needed, count = wintypes.DWORD(0), wintypes.DWORD(0)
+    winspool.EnumPrintersW(flags, None, 4, None, 0, ctypes.byref(needed), ctypes.byref(count))
+    if needed.value:
+        data = ctypes.create_string_buffer(needed.value)
+
+        class PRINTER_INFO_4(ctypes.Structure):
+            _fields_ = [("pPrinterName", wintypes.LPWSTR), ("pServerName", wintypes.LPWSTR),
+                        ("Attributes", wintypes.DWORD)]
+
+        if winspool.EnumPrintersW(flags, None, 4, data, needed, ctypes.byref(needed), ctypes.byref(count)):
+            arr = ctypes.cast(data, ctypes.POINTER(PRINTER_INFO_4))
+            names = [arr[i].pPrinterName for i in range(count.value) if arr[i].pPrinterName]
+    if default and default not in names:
+        names.insert(0, default)
+    return default, names
+
+
+def print_document(printer, doc, pages, copies=1, on_progress=None, output=None):
+    """Stampa le pagine (indici) del documento sulla stampante indicata, disegnandole via GDI.
+
+    output: percorso di un file su cui scrivere invece che sulla carta (es. «Microsoft Print to PDF»)."""
+    import ctypes
+    from ctypes import wintypes
+    gdi32 = ctypes.windll.gdi32
+    vp = ctypes.c_void_p
+
+    class DOCINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_int), ("lpszDocName", wintypes.LPCWSTR), ("lpszOutput", wintypes.LPCWSTR),
+                    ("lpszDatatype", wintypes.LPCWSTR), ("fwType", wintypes.DWORD)]
+
+    class BMIH(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                    ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+
+    gdi32.CreateDCW.restype = vp
+    gdi32.CreateDCW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR, vp]
+    for fn in (gdi32.StartPage, gdi32.EndPage, gdi32.EndDoc, gdi32.AbortDoc, gdi32.DeleteDC):
+        fn.argtypes = [vp]
+    gdi32.GetDeviceCaps.argtypes = [vp, ctypes.c_int]
+    gdi32.StartDocW.argtypes = [vp, vp]
+    gdi32.StretchDIBits.argtypes = [vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, ctypes.c_int, vp, vp, ctypes.c_uint, wintypes.DWORD]
+    dc = gdi32.CreateDCW("WINSPOOL", printer, None, None)
+    if not dc:
+        raise OSError(f"Stampante non disponibile: {printer}")
+    HORZRES, VERTRES, LOGPIXELSX, LOGPIXELSY = 8, 10, 88, 90
+    horz, vert = gdi32.GetDeviceCaps(dc, HORZRES), gdi32.GetDeviceCaps(dc, VERTRES)
+    dpix = gdi32.GetDeviceCaps(dc, LOGPIXELSX) or 300
+    dpiy = gdi32.GetDeviceCaps(dc, LOGPIXELSY) or 300
+    info = DOCINFO(ctypes.sizeof(DOCINFO), APP_NAME, output, None, 0)
+    if gdi32.StartDocW(dc, ctypes.byref(info)) <= 0:
+        gdi32.DeleteDC(dc)
+        raise OSError("Avvio della stampa non riuscito.")
+    seq = [i for _ in range(max(1, copies)) for i in pages]
+    try:
+        render_dpi = min(dpix, 300)
+        for n, i in enumerate(seq):
+            if on_progress and not on_progress(n, len(seq)):
+                gdi32.AbortDoc(dc)
+                return False
+            page = doc[i]
+            pr = page.rect
+            pw, ph = pr.width / 72 * dpix, pr.height / 72 * dpiy      # dimensione a piena risoluzione stampante
+            scale = min(horz / pw, vert / ph) if pw and ph else 1.0
+            tw, th = int(pw * scale), int(ph * scale)
+            x, y = (horz - tw) // 2, (vert - th) // 2
+            pix = page.get_pixmap(dpi=render_dpi, alpha=False)
+            w, h = pix.width, pix.height
+            stride = (w * 3 + 3) & ~3
+            src = pix.samples
+            buf = bytearray(stride * h)
+            for row in range(h):                                     # RGB (PyMuPDF) -> BGR (DIB), righe allineate
+                line = bytearray(src[row * w * 3:(row + 1) * w * 3])
+                line[0::3], line[2::3] = line[2::3], line[0::3]
+                buf[row * stride:row * stride + w * 3] = line
+            bmi = BMIH(40, w, -h, 1, 24, 0, 0, 0, 0, 0, 0)
+            bits = (ctypes.c_char * len(buf)).from_buffer(buf)
+            gdi32.StartPage(dc)
+            gdi32.StretchDIBits(dc, x, y, tw, th, 0, 0, w, h, ctypes.cast(bits, vp), ctypes.byref(bmi),
+                                0, 0x00CC0020)                       # DIB_RGB_COLORS, SRCCOPY
+            gdi32.EndPage(dc)
+        gdi32.EndDoc(dc)
+        return True
+    except Exception:
+        gdi32.AbortDoc(dc)
+        raise
+    finally:
+        gdi32.DeleteDC(dc)
 
 
 def place_dialog(top, parent):
@@ -731,12 +853,18 @@ def stroke_drawer(points, color, width, opacity=1.0):
 
 def text_drawer(x, y, params, fontfile, scale, color):
     """Testo con l'angolo in alto a sinistra in (x, y); scale: pixel dell'immagine per punto di carattere."""
+    font = text_font(fontfile)
     size = params["size"] * scale
-    ascender = text_font(fontfile).ascender
+    ascender = font.ascender
 
     def draw(page):
         page.insert_text((x, y + ascender * size), params["text"], fontsize=size, lineheight=LINE_HEIGHT,
                          fontname="F0" if fontfile else "helv", fontfile=fontfile, color=color)
+        if params.get("underline"):
+            for k, line in enumerate(params["text"].split("\n")):
+                w = font.text_length(line, fontsize=size)
+                ly = y + size * (ascender + k * LINE_HEIGHT - 0.6 * font.descender)
+                page.draw_line((x, ly), (x + w, ly), color=color, width=max(size * 0.05, 0.4))
     return draw
 
 
@@ -1404,14 +1532,36 @@ def fix_space_mapping(page):
             doc.update_stream(cmap, fixed)
 
 
+def draw_text_box(target, params, fontfile, resname):
+    """Disegna il testo (e, se richiesta, la sottolineatura) in un'unica operazione, su una pagina o
+    una shape, così testo e righe stanno nello stesso stream e si spostano/eliminano insieme."""
+    font = text_font(fontfile)
+    shape = target.new_shape()
+    if params.get("underline"):
+        size = params["size"]
+        a = math.radians(params["rotate"])
+        u = (math.cos(a), -math.sin(a))
+        v = (math.sin(a), math.cos(a))
+        ox, oy = params["origin"]
+        yoff = -font.descender * size * 0.6            # poco sotto la linea di base
+        for k, line in enumerate(params["text"].split("\n")):
+            w = font.text_length(line, fontsize=size)
+            ly = k * LINE_HEIGHT * size + yoff
+            shape.draw_line(pymupdf.Point(ox + ly * v[0], oy + ly * v[1]),
+                            pymupdf.Point(ox + w * u[0] + ly * v[0], oy + w * u[1] + ly * v[1]))
+        shape.finish(color=hex_to_rgb(params["color"]), width=max(size * 0.05, 0.4))
+    shape.insert_text(params["origin"], params["text"], fontsize=params["size"], lineheight=LINE_HEIGHT,
+                      fontname=resname if fontfile else "helv", fontfile=fontfile,
+                      color=hex_to_rgb(params["color"]), rotate=params["rotate"])
+    shape.commit()
+
+
 def insert_text_box(page, params, fontfile, resname):
     """Scrive una casella di testo: uno stream nuovo, marcato con i suoi parametri. Restituisce lo xref."""
     doc = page.parent
     params = dict(params, rect=[round(v, 2) for v in text_box_rect(params, text_font(fontfile))])
     before = set(page.get_contents())
-    page.insert_text(params["origin"], params["text"], fontsize=params["size"], lineheight=LINE_HEIGHT,
-                     fontname=resname if fontfile else "helv", fontfile=fontfile,
-                     color=hex_to_rgb(params["color"]), rotate=params["rotate"])
+    draw_text_box(page, params, fontfile, resname)
     xref = [x for x in page.get_contents() if x not in before and b"BT" in doc.xref_stream(x)][-1]
     doc.xref_set_key(xref, TEXT_KEY, pymupdf.get_pdf_str(json.dumps(params, ensure_ascii=False)))
     if fontfile:
@@ -1780,6 +1930,33 @@ def pdf_to_docx(pdf, docx, timeout=900):
 _TK_FAMILIES = None
 
 
+FONT_SUFFIXES = (" Bold Italic", " Bold Oblique", " Bold", " Italic", " Oblique")
+
+
+def font_base(name):
+    """La famiglia senza la variante: «Arial Bold Italic» -> «Arial»."""
+    for suffix in FONT_SUFFIXES:
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
+    return name
+
+
+def resolve_variant(fonts, base, bold, italic):
+    """Il nome del font installato per la famiglia base con grassetto/corsivo richiesti, se esiste."""
+    if bold and italic:
+        combos = (" Bold Italic", " Bold Oblique")
+    elif bold:
+        combos = (" Bold",)
+    elif italic:
+        combos = (" Italic", " Oblique")
+    else:
+        return base if base in fonts else None
+    for suffix in combos:
+        if base + suffix in fonts:
+            return base + suffix
+    return None       # la famiglia non ha quella variante: il chiamante disattiva il pulsante
+
+
 def tk_font_style(name, widget):
     """(famiglia, peso, stile) di Tk per un font installato: «Arial Bold Italic» -> Arial, bold, italic."""
     global _TK_FAMILIES
@@ -1801,9 +1978,7 @@ def text_preview(page, params, fontfile, zoom):
     doc = pymupdf.open()
     tmp = doc.new_page(width=page.cropbox.width, height=page.cropbox.height)
     tmp.set_rotation(page.rotation)
-    tmp.insert_text(params["origin"], params["text"], fontsize=params["size"], lineheight=LINE_HEIGHT,
-                    fontname="F0" if fontfile else "helv", fontfile=fontfile, color=hex_to_rgb(params["color"]),
-                    rotate=params["rotate"])
+    draw_text_box(tmp, params, fontfile, "F0")
     clip = (box + (-2, -2, 2, 2)) & tmp.rect
     return tmp.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=True), clip
 
@@ -1817,10 +1992,12 @@ class TextDialog:
     """
 
     def __init__(self, parent, fonts, title, params, original=None, whiteout=None, preview=None):
-        self.result = None   # dict(text, font, size, color, whiteout)
+        self.result = None   # dict(text, font, size, color, underline, whiteout)
         self.color = params["color"]
+        self.fonts = fonts
         self.preview = preview
         self._job = None
+        self._syncing = False
         s = parent.winfo_fpixels("1i") / 96
         top = self.top = tk.Toplevel(parent)
         top.title(title)
@@ -1855,6 +2032,17 @@ class TextDialog:
         self.size_var = tk.StringVar(value=f"{params['size']:g}")
         ttk.Spinbox(row, from_=4, to=200, increment=0.5, width=6, textvariable=self.size_var).pack(side=tk.LEFT,
                                                                                                 padx=(6, 0))
+        _, weight, slant = tk_font_style(font, top)
+        self.bold_var = tk.BooleanVar(value=weight == "bold")
+        self.italic_var = tk.BooleanVar(value=slant == "italic")
+        self.underline_var = tk.BooleanVar(value=bool(params.get("underline")))
+        ttk.Label(row, text="   Stile:").pack(side=tk.LEFT)
+        for var, label, fnt in ((self.bold_var, "G", ("Segoe UI", 11, "bold")),
+                                (self.italic_var, "C", ("Segoe UI", 11, "italic")),
+                                (self.underline_var, "S", ("Segoe UI", 11, "underline"))):
+            cmd = self._refresh if var is self.underline_var else self._apply_variant
+            tk.Checkbutton(row, text=label, variable=var, font=fnt, indicatoron=False, width=2,
+                           command=cmd).pack(side=tk.LEFT, padx=(4, 0))
         row = ttk.Frame(body)
         row.pack(fill=tk.X, pady=(10, 0))
         ttk.Label(row, text="Colore:").pack(side=tk.LEFT)
@@ -1883,6 +2071,7 @@ class TextDialog:
         top.bind("<Destroy>", self._on_destroy)
         for var in (self.font_var, self.size_var):
             var.trace_add("write", self._changed)
+        self.font_var.trace_add("write", self._sync_style)
         self._refresh()
         place_dialog(top, parent)
         self.text.focus_set()
@@ -1908,6 +2097,28 @@ class TextDialog:
             self.top.after_cancel(self._job)
         self._job = self.top.after(120, self._refresh)
 
+    def _apply_variant(self):
+        """Grassetto/corsivo: riseleziona la variante del font (se installata)."""
+        base = font_base(self.font_var.get())
+        variant = resolve_variant(self.fonts, base, self.bold_var.get(), self.italic_var.get())
+        if variant:
+            self._syncing = True
+            self.font_var.set(variant)
+            self._syncing = False
+        else:
+            self._sync_style()      # la famiglia non ha quella variante: riallinea i pulsanti
+        self._refresh()
+
+    def _sync_style(self, *_):
+        """Riallinea i pulsanti G/C al font scelto dal menu."""
+        if self._syncing:
+            return
+        _, weight, slant = tk_font_style(self.font_var.get(), self.top)
+        self._syncing = True
+        self.bold_var.set(weight == "bold")
+        self.italic_var.set(slant == "italic")
+        self._syncing = False
+
     def _values(self):
         """(testo, dimensione): la dimensione è None se non è un numero valido."""
         text = self.text.get("1.0", "end-1c").replace("\t", "    ").rstrip()
@@ -1926,11 +2137,15 @@ class TextDialog:
         light = sum(hex_to_rgb(self.color)) > 2.55   # testo chiaro: su fondo scuro, se no non si vede
         self.text.configure(font=(family, shown, weight, slant), foreground=self.color,
                             insertbackground=self.color, background="#5f6368" if light else "white")
+        self.text.tag_configure("ul", underline=True)
+        self.text.tag_remove("ul", "1.0", "end")
+        if self.underline_var.get():
+            self.text.tag_add("ul", "1.0", "end")
         self.format_note.configure(text="" if not size or shown == round(size) else
                                    f"Nel riquadro il testo è mostrato a {shown} pt; nel PDF sarà di {size:g} pt.")
         if self.preview:
-            self.preview({"text": text, "font": self.font_var.get(), "size": size, "color": self.color}
-                         if text.strip() and size else None)
+            self.preview({"text": text, "font": self.font_var.get(), "size": size, "color": self.color,
+                          "underline": self.underline_var.get()} if text.strip() and size else None)
 
     def _on_destroy(self, event):
         if event.widget is self.top:
@@ -1952,7 +2167,7 @@ class TextDialog:
             messagebox.showinfo(APP_NAME, "Dimensione non valida (da 4 a 400 punti).", parent=self.top)
             return
         self.result = {"text": text, "font": self.font_var.get(), "size": size, "color": self.color,
-                       "whiteout": self.whiteout_var.get()}
+                       "underline": self.underline_var.get(), "whiteout": self.whiteout_var.get()}
         self.top.destroy()
 
 
@@ -1998,6 +2213,94 @@ class OcrDialog:
 
     def _ok(self):
         self.result = (self.choices[self.scope.get()], OCR_LANGUAGES[self.language.get()], self.skip.get())
+        self.top.destroy()
+
+
+class PrintDialog:
+    """Scelta di stampante, pagine e numero di copie."""
+
+    def __init__(self, parent, current, selected, total, printers, default):
+        self.result = None   # (stampante, [indici pagina], copie)
+        self.total = total
+        self.choices = {"current": [current], "selected": selected, "all": list(range(total))}
+        top = self.top = tk.Toplevel(parent)
+        top.title("Stampa")
+        top.transient(parent)
+        top.resizable(False, False)
+        body = ttk.Frame(top, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        row = ttk.Frame(body)
+        row.pack(fill=tk.X)
+        ttk.Label(row, text="Stampante:").pack(side=tk.LEFT)
+        self.printer = tk.StringVar(value=default if default in printers else (printers[0] if printers else ""))
+        ttk.Combobox(row, textvariable=self.printer, values=printers, state="readonly",
+                     width=36).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(body, text="Pagine:").pack(anchor="w", pady=(12, 0))
+        self.scope = tk.StringVar(value="all")
+        options = [("current", f"Pagina corrente ({current + 1})")]
+        if len(selected) > 1:
+            options.append(("selected", f"Pagine selezionate ({len(selected)})"))
+        options.append(("all", f"Tutte le pagine ({total})"))
+        for value, text in options:
+            ttk.Radiobutton(body, text=text, value=value, variable=self.scope,
+                            command=self._sync).pack(anchor="w", padx=(12, 0))
+        rrow = ttk.Frame(body)
+        rrow.pack(anchor="w", padx=(12, 0))
+        ttk.Radiobutton(rrow, text="Intervallo:", value="range", variable=self.scope,
+                        command=self._sync).pack(side=tk.LEFT)
+        self.range_var = tk.StringVar(value=f"1-{total}")
+        self.range_entry = ttk.Entry(rrow, textvariable=self.range_var, width=12)
+        self.range_entry.pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(rrow, text="(es. 1-3, 5)").pack(side=tk.LEFT, padx=(6, 0))
+        crow = ttk.Frame(body)
+        crow.pack(fill=tk.X, pady=(12, 0))
+        ttk.Label(crow, text="Copie:").pack(side=tk.LEFT)
+        self.copies = tk.IntVar(value=1)
+        ttk.Spinbox(crow, from_=1, to=99, width=4, textvariable=self.copies).pack(side=tk.LEFT, padx=(6, 0))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, pady=(14, 0))
+        ttk.Button(buttons, text="Annulla", command=top.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Stampa", command=self._ok).pack(side=tk.RIGHT, padx=6)
+        top.bind("<Return>", lambda e: self._ok())
+        top.bind("<Escape>", lambda e: top.destroy())
+        self._sync()
+        place_dialog(top, parent)
+
+    def _sync(self):
+        self.range_entry.configure(state="normal" if self.scope.get() == "range" else "disabled")
+
+    def _pages_from_range(self):
+        pages = []
+        for part in self.range_var.get().replace(" ", "").split(","):
+            if not part:
+                continue
+            if "-" in part:
+                a, b = part.split("-", 1)
+                pages += list(range(int(a), int(b) + 1))
+            else:
+                pages.append(int(part))
+        return [p - 1 for p in pages if 1 <= p <= self.total]
+
+    def _ok(self):
+        if not self.printer.get():
+            messagebox.showwarning(APP_NAME, "Nessuna stampante disponibile.", parent=self.top)
+            return
+        if self.scope.get() == "range":
+            try:
+                pages = self._pages_from_range()
+            except ValueError:
+                messagebox.showwarning(APP_NAME, "Intervallo non valido. Esempio: 1-3, 5", parent=self.top)
+                return
+        else:
+            pages = self.choices[self.scope.get()]
+        if not pages:
+            messagebox.showwarning(APP_NAME, "Nessuna pagina da stampare.", parent=self.top)
+            return
+        try:
+            copies = max(1, int(self.copies.get() or 1))
+        except (tk.TclError, ValueError):
+            copies = 1
+        self.result = (self.printer.get(), pages, copies)
         self.top.destroy()
 
 
@@ -2054,8 +2357,9 @@ def default_layout():
     return json.loads(json.dumps(DEFAULT_LAYOUT))
 
 
-def bar_button(group, text, command, width=None):
-    ttk.Button(group, text=text, command=command, width=width).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+def bar_button(group, text, command, width=None, image=None):
+    kw = {"image": image, "compound": tk.LEFT} if image else {}
+    ttk.Button(group, text=text, command=command, width=width, **kw).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
 
 
 def on_screen(geometry):
@@ -3292,6 +3596,8 @@ class DocTab:
         self.stamp_xrefs = {}      # id timbro -> immagine già presente nel documento
         self.last_stamp = None     # (pagina, x relativa, y relativa, id timbro)
         self.thumb_photos = {}
+        self.page_photos = {}      # raster delle pagine intere (scorrimento continuo)
+        self.page_zoom = None      # zoom con cui sono stati creati i raster del continuo
         self.view_pos = (0.0, 0.0)
         self.thumbs_pos = 0.0
         self.thumb_w = 0           # misura delle miniature in thumb_photos
@@ -3329,6 +3635,8 @@ class App:
     stamp_xrefs = _per_tab("stamp_xrefs")
     last_stamp = _per_tab("last_stamp")
     thumb_photos = _per_tab("thumb_photos")
+    page_photos = _per_tab("page_photos")
+    page_zoom = _per_tab("page_zoom")
 
     def __init__(self, root, path=None):
         self.root = root
@@ -3361,6 +3669,13 @@ class App:
         self.page_origin = (0, 0)
         self.scroll_size = (1, 1)
         self.page_photo = None
+        saved_scroll = self.cfg["scroll_mode"]
+        self.scroll_mode = saved_scroll if saved_scroll in ("single", "continuous") else "single"
+        self._editing = False          # modifica puntuale in corso (continuo -> single temporaneo)
+        self._cont_job = None          # scheduling del rendering pigro del continuo
+        self._building_continuous = False
+        self.page_tops = []            # inizio y di ogni pagina sulla tela (continuo)
+        self.page_layout = []          # per pagina: (ox, oy, w, h) sulla tela (continuo)
         self.thumb_layout = []         # per pagina: (y0, y1, x0, scala)
         self.thumb_total = 1           # lunghezza della fila di miniature (per lo scorrimento)
         self._thumb_job = None
@@ -3373,6 +3688,7 @@ class App:
         self._ghost_photo = None
         self._preview_photo = None
         self._gallery_photos = {}
+        self._icons = {}               # icone dei pulsanti/menu (Segoe MDL2), tenute in vita qui
         self._loading_settings = False
         self.tool = None               # None, "stamp" oppure uno di TEXT_TOOLS
         self.page_stamps = []          # timbri e caselle di testo già sulla pagina mostrata
@@ -3380,6 +3696,9 @@ class App:
         self._sel_page = None
         self._drag = None              # trascinamento di un timbro o di una casella
         self._page_lines = None        # righe di testo della pagina mostrata (modifica testo)
+        self._page_words = None        # parole della pagina mostrata (selezione e copia)
+        self._text_sel = None          # selezione di testo in corso (trascinamento)
+        self._clip_text = ""           # ultimo testo selezionato, da copiare con Ctrl+C
         self._area = None              # rettangolo del bianchetto in corso
         self._find = None              # ricerca: testo, documento, risultati, posizione
         self.px_per_pt = root.winfo_fpixels("1i") / 72
@@ -3472,14 +3791,35 @@ class App:
         self._apply_layout()
         root.bind("<Configure>", self._on_root_configure, add=True)
 
+    def _glyph(self, glyph, size=18):
+        """Piccola icona monocromatica dal font di sistema Segoe MDL2; None se non disponibile."""
+        if not glyph:
+            return None
+        key = (glyph, size)
+        if key not in self._icons:
+            img = None
+            try:
+                if ICON_FONT.exists():
+                    doc = pymupdf.open()
+                    page = doc.new_page(width=size, height=size)
+                    page.insert_font(fontname="ic", fontfile=str(ICON_FONT))
+                    page.insert_text((0, round(size * 0.82)), chr(int(glyph, 16)), fontsize=size,
+                                     fontname="ic", color=hex_to_rgb(ICON_COLOR))
+                    img = photo_from_pixmap(page.get_pixmap(alpha=True))
+            except Exception:
+                img = None
+            self._icons[key] = img
+        return self._icons[key]
+
     def _build_main_bar(self):
         bar = ToolBar(self.root, "main", self._on_grip)
-        for text, cmd in (("Apri…", self.cmd_open), ("Nuovo", self.cmd_new),
-                          ("Aggiungi…", lambda: self.cmd_add(at_end=True)), ("Salva…", self.cmd_save)):
-            bar_button(bar.group(), text, cmd)
+        for text, glyph, cmd in (("Apri…", "E8E5", self.cmd_open), ("Nuovo", "E7C3", self.cmd_new),
+                                 ("Aggiungi…", "E710", lambda: self.cmd_add(at_end=True)),
+                                 ("Salva…", "E74E", self.cmd_save)):
+            bar_button(bar.group(), text, cmd, image=self._glyph(glyph))
         bar.separator()
-        bar_button(bar.group(), "↶ Annulla", self.undo)
-        bar_button(bar.group(), "↷ Ripristina", self.redo)
+        bar_button(bar.group(), "Annulla", self.undo, image=self._glyph("E7A7"))
+        bar_button(bar.group(), "Ripristina", self.redo, image=self._glyph("E7A6"))
         bar.separator()
         g = bar.group()
         bar_button(g, "◀", self.prev_page, width=3)
@@ -3497,23 +3837,26 @@ class App:
         self.zoom_lbl.pack(side=tk.LEFT)
         bar_button(g, "+", lambda: self._zoom_at(1.25), width=3)
         bar_button(bar.group(), "Larghezza", lambda: self.set_zoom_mode("width"))
-        bar_button(bar.group(), "Pagina intera", lambda: self.set_zoom_mode("page"))
+        bar_button(bar.group(), "Pagina intera", lambda: self.set_zoom_mode("page"), image=self._glyph("E9A6"))
         bar.separator()
-        for text, cmd in (("↺ Ruota sx", lambda: self.rotate(-90)), ("↻ Ruota dx", lambda: self.rotate(90)),
-                          ("▲ Su", lambda: self.move_pages(-1)), ("▼ Giù", lambda: self.move_pages(1)),
-                          ("✕ Elimina", self.delete_pages)):
-            bar_button(bar.group(), text, cmd)
+        for text, glyph, cmd in (("↺ Ruota sx", "", lambda: self.rotate(-90)),
+                                 ("↻ Ruota dx", "", lambda: self.rotate(90)),
+                                 ("▲ Su", "", lambda: self.move_pages(-1)), ("▼ Giù", "", lambda: self.move_pages(1)),
+                                 ("Elimina", "E74D", self.delete_pages)):
+            bar_button(bar.group(), text, cmd, image=self._glyph(glyph))
         return bar
 
     def _build_text_bar(self):
         bar = ToolBar(self.root, "text", self._on_grip)
         ttk.Label(bar.group(), text="Testo:").pack(side=tk.LEFT, padx=(2, 4))
         self.tool_var = tk.StringVar()
-        for value, text in (("edit_text", "✎ Modifica testo"), ("add_text", "+ Aggiungi testo"),
-                            ("whiteout", "Bianchetto"), ("blackout", "Oscura")):
+        for value, text, glyph in (("edit_text", "Modifica testo", "E70F"), ("add_text", "+ Aggiungi testo", ""),
+                                   ("whiteout", "Bianchetto", "E75C"), ("blackout", "Oscura", "")):
+            img = self._glyph(glyph)
+            kw = {"image": img, "compound": tk.LEFT} if img else {}
             ttk.Radiobutton(bar.group(), text=text, value=value, variable=self.tool_var, style="Toolbutton",
-                            command=lambda v=value: self.set_tool(None if self.tool == v else v)
-                            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+                            command=lambda v=value: self.set_tool(None if self.tool == v else v),
+                            **kw).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
         bar.separator()
         bar_button(bar.group(), "Riconosci testo (OCR)…", self.cmd_ocr)
         bar_button(bar.group(), "Esporta in Word…", self.cmd_export_word)
@@ -3521,9 +3864,11 @@ class App:
         bar_button(bar.group(), "Unisci schede…", self.cmd_merge_tabs)
         bar_button(bar.group(), "Dividi…", self.cmd_split)
         self.overview_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bar.group(), text="▦ Vista d'insieme", style="Toolbutton", variable=self.overview_var,
-                        command=lambda: self.toggle_overview(self.overview_var.get())
-                        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        ov_icon = self._glyph("E8A9")
+        ov_kw = {"image": ov_icon, "compound": tk.LEFT} if ov_icon else {}
+        ttk.Checkbutton(bar.group(), text="Vista d'insieme", style="Toolbutton", variable=self.overview_var,
+                        command=lambda: self.toggle_overview(self.overview_var.get()),
+                        **ov_kw).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
         bar.separator()
         g = bar.group()
         ttk.Label(g, text="Cerca:").pack(side=tk.LEFT, padx=(0, 4))
@@ -3659,7 +4004,13 @@ class App:
                               xscrollincrement=20, yscrollincrement=20)
         vsb = ttk.Scrollbar(area, orient=tk.VERTICAL, command=self.view.yview)
         hsb = ttk.Scrollbar(area, orient=tk.HORIZONTAL, command=self.view.xview)
-        self.view.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        def _view_yscroll(a, b):
+            vsb.set(a, b)
+            if not self._building_continuous and self._continuous_active():
+                self._sync_current_from_scroll()
+                self._schedule_continuous_render()
+        self.view.configure(yscrollcommand=_view_yscroll, xscrollcommand=hsb.set)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         self.view.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -4077,17 +4428,22 @@ class App:
     def _build_menu(self):
         m = tk.Menu(self.root)
         f = tk.Menu(m, tearoff=False)
+        ic = dict(compound="left")
         f.add_command(label="Apri… (anche più file, ognuno nella sua scheda)", accelerator="Ctrl+O",
-                      command=self.cmd_open)
-        f.add_command(label="Nuovo documento vuoto", accelerator="Ctrl+N", command=self.cmd_new)
+                      command=self.cmd_open, image=self._glyph("E8E5"), **ic)
+        f.add_command(label="Nuovo documento vuoto", accelerator="Ctrl+N", command=self.cmd_new,
+                      image=self._glyph("E7C3"), **ic)
         f.add_command(label="Aggiungi PDF/immagini in fondo…", accelerator="Ctrl+I",
-                      command=lambda: self.cmd_add(at_end=True))
+                      command=lambda: self.cmd_add(at_end=True), image=self._glyph("E710"), **ic)
         f.add_command(label="Inserisci PDF/immagini dopo la pagina corrente…", accelerator="Ctrl+Maiusc+I",
                       command=lambda: self.cmd_add(at_end=False))
         f.add_separator()
-        f.add_command(label="Salva con nome…", accelerator="Ctrl+S", command=self.cmd_save)
+        f.add_command(label="Salva con nome…", accelerator="Ctrl+S", command=self.cmd_save,
+                      image=self._glyph("E74E"), **ic)
         f.add_command(label="Estrai pagine selezionate…", accelerator="Ctrl+E", command=self.cmd_extract)
         f.add_command(label="Esporta in Word…", accelerator="Ctrl+Maiusc+W", command=self.cmd_export_word)
+        f.add_command(label="Stampa…", accelerator="Ctrl+P", command=self.cmd_print,
+                      image=self._glyph("E749"), **ic)
         f.add_separator()
         f.add_command(label="Unisci le schede in un nuovo documento…", accelerator="Ctrl+U", command=self.cmd_merge_tabs)
         f.add_command(label="Dividi il documento in più file…", accelerator="Ctrl+D", command=self.cmd_split)
@@ -4100,8 +4456,8 @@ class App:
         m.add_cascade(label="File", menu=f)
 
         e = tk.Menu(m, tearoff=False)
-        e.add_command(label="Annulla", accelerator="Ctrl+Z", command=self.undo)
-        e.add_command(label="Ripristina", accelerator="Ctrl+Y", command=self.redo)
+        e.add_command(label="Annulla", accelerator="Ctrl+Z", command=self.undo, image=self._glyph("E7A7"), **ic)
+        e.add_command(label="Ripristina", accelerator="Ctrl+Y", command=self.redo, image=self._glyph("E7A6"), **ic)
         e.add_separator()
         e.add_command(label="Ruota a destra", accelerator="Ctrl+R", command=lambda: self.rotate(90))
         e.add_command(label="Ruota a sinistra", accelerator="Ctrl+Maiusc+R", command=lambda: self.rotate(-90))
@@ -4110,18 +4466,28 @@ class App:
         e.add_separator()
         e.add_command(label="Sposta su", accelerator="Ctrl+↑", command=lambda: self.move_pages(-1))
         e.add_command(label="Sposta giù", accelerator="Ctrl+↓", command=lambda: self.move_pages(1))
-        e.add_command(label="Elimina pagine selezionate", accelerator="Canc", command=self.delete_pages)
+        e.add_command(label="Elimina pagine selezionate", accelerator="Canc", command=self.delete_pages,
+                      image=self._glyph("E74D"), **ic)
         e.add_command(label="Seleziona tutte le pagine", accelerator="Ctrl+A", command=self.select_all)
         m.add_cascade(label="Pagine", menu=e)
 
         v = tk.Menu(m, tearoff=False)
-        v.add_command(label="Zoom avanti", accelerator="Ctrl++", command=lambda: self._zoom_at(1.25))
-        v.add_command(label="Zoom indietro", accelerator="Ctrl+-", command=lambda: self._zoom_at(1 / 1.25))
+        v.add_command(label="Zoom avanti", accelerator="Ctrl++", command=lambda: self._zoom_at(1.25),
+                      image=self._glyph("E8A3"), **ic)
+        v.add_command(label="Zoom indietro", accelerator="Ctrl+-", command=lambda: self._zoom_at(1 / 1.25),
+                      image=self._glyph("E71F"), **ic)
         v.add_command(label="Adatta alla larghezza", accelerator="Ctrl+2", command=lambda: self.set_zoom_mode("width"))
-        v.add_command(label="Pagina intera", accelerator="Ctrl+0", command=lambda: self.set_zoom_mode("page"))
+        v.add_command(label="Pagina intera", accelerator="Ctrl+0", command=lambda: self.set_zoom_mode("page"),
+                      image=self._glyph("E9A6"), **ic)
         v.add_command(label="Dimensione reale (100%)", accelerator="Ctrl+1", command=self.set_real_size)
         v.add_command(label="Vista d'insieme delle miniature di tutti i PDF", accelerator="F4",
-                      command=self.toggle_overview)
+                      command=self.toggle_overview, image=self._glyph("E8A9"), **ic)
+        v.add_separator()
+        self.scroll_mode_var = tk.StringVar(value=self.scroll_mode)
+        v.add_radiobutton(label="Pagina singola (una pagina per volta)", value="single",
+                          variable=self.scroll_mode_var, command=self._apply_scroll_mode)
+        v.add_radiobutton(label="Scorrimento continuo (tutte le pagine)", value="continuous",
+                          variable=self.scroll_mode_var, command=self._apply_scroll_mode)
         v.add_separator()
         v.add_command(label="Ripristina disposizione di barre e pannelli", command=self.reset_layout)
         v.add_separator()
@@ -4130,29 +4496,33 @@ class App:
         m.add_cascade(label="Visualizza", menu=v)
 
         x = tk.Menu(m, tearoff=False)
-        x.add_command(label="Modifica testo", accelerator="Ctrl+M", command=lambda: self.set_tool("edit_text"))
+        x.add_command(label="Modifica testo", accelerator="Ctrl+M", command=lambda: self.set_tool("edit_text"),
+                      image=self._glyph("E70F"), **ic)
         x.add_command(label="Aggiungi testo", accelerator="Ctrl+T", command=lambda: self.set_tool("add_text"))
         x.add_command(label="Bianchetto (copri con il bianco)", accelerator="Ctrl+B",
-                      command=lambda: self.set_tool("whiteout"))
+                      command=lambda: self.set_tool("whiteout"), image=self._glyph("E75C"), **ic)
         x.add_command(label="Oscura (copri con il nero)", accelerator="Ctrl+Maiusc+B",
                       command=lambda: self.set_tool("blackout"))
         x.add_separator()
         x.add_command(label="Riconosci testo (OCR)…", accelerator="Ctrl+Maiusc+O", command=self.cmd_ocr)
-        x.add_command(label="Cerca", accelerator="Ctrl+F", command=self.focus_find)
+        x.add_command(label="Cerca", accelerator="Ctrl+F", command=self.focus_find,
+                      image=self._glyph("E721"), **ic)
         m.add_cascade(label="Testo", menu=x)
 
         t = tk.Menu(m, tearoff=False)
-        t.add_command(label="Aggiungi timbro da immagine…", accelerator="Ctrl+Maiusc+N", command=self.cmd_add_stamp)
+        t.add_command(label="Aggiungi timbro da immagine…", accelerator="Ctrl+Maiusc+N", command=self.cmd_add_stamp,
+                      image=self._glyph("E710"), **ic)
         t.add_command(label="Crea firma (disegnata o scritta)…", accelerator="Ctrl+Maiusc+F",
-                      command=self.cmd_create_signature)
+                      command=self.cmd_create_signature, image=self._glyph("EE56"), **ic)
         t.add_command(label="Modifica timbro selezionato (ruota, matita, gomma, testo)…", accelerator="Ctrl+Maiusc+M",
-                      command=self.cmd_edit_stamp)
+                      command=self.cmd_edit_stamp, image=self._glyph("E70F"), **ic)
         t.add_command(label="Ruota timbro selezionato a destra (dei gradi indicati)", accelerator="Ctrl+Maiusc+→",
                       command=lambda: self.rotate_stamp(self.rotate_step))
         t.add_command(label="Ruota timbro selezionato a sinistra (dei gradi indicati)", accelerator="Ctrl+Maiusc+←",
                       command=lambda: self.rotate_stamp(-self.rotate_step))
         t.add_command(label="Rinomina timbro selezionato…", accelerator="F2", command=self.cmd_rename_stamp)
-        t.add_command(label="Elimina timbro selezionato", accelerator="Ctrl+Maiusc+Canc", command=self.cmd_delete_stamp)
+        t.add_command(label="Elimina timbro selezionato", accelerator="Ctrl+Maiusc+Canc", command=self.cmd_delete_stamp,
+                      image=self._glyph("E74D"), **ic)
         t.add_separator()
         t.add_command(label="Attiva/disattiva modalità timbro", accelerator="T  o  Ctrl+Maiusc+T",
                       command=self.toggle_stamp_mode)
@@ -4160,7 +4530,7 @@ class App:
                       command=self.repeat_last_stamp)
         t.add_separator()
         t.add_command(label="Archivio dei timbri (posizione, altri PC, password)…", accelerator="Ctrl+Maiusc+A",
-                      command=self.cmd_archive)
+                      command=self.cmd_archive, image=self._glyph("E8B7"), **ic)
         m.add_cascade(label="Timbro", menu=t)
 
         h = tk.Menu(m, tearoff=False)
@@ -4208,6 +4578,7 @@ class App:
 
         ctrl("a", self.select_all, self.cmd_archive, skip_when_typing=True)
         ctrl("b", lambda: self.set_tool("whiteout"), lambda: self.set_tool("blackout"))
+        ctrl("c", self.copy_selection, skip_when_typing=True)
         ctrl("d", self.cmd_split)
         ctrl("e", self.cmd_extract)
         ctrl("f", self.focus_find, self.cmd_create_signature)
@@ -4215,7 +4586,7 @@ class App:
         ctrl("m", lambda: self.set_tool("edit_text"), self.cmd_edit_stamp)
         ctrl("n", self.cmd_new, self.cmd_add_stamp)
         ctrl("o", self.cmd_open, self.cmd_ocr)
-        ctrl("p", None, self.repeat_last_stamp)
+        ctrl("p", self.cmd_print, self.repeat_last_stamp)
         ctrl("q", self.quit)
         ctrl("r", lambda: self.rotate(90), lambda: self.rotate(-90))
         ctrl("s", self.cmd_save)
@@ -4942,6 +5313,24 @@ class App:
     def go_to(self, index, at_bottom=False, structure=False):
         if not self.doc:
             return
+        self._clear_text_selection()
+        if self._continuous_active() and not structure:
+            self.current = max(0, min(index, len(self.doc) - 1))
+            self.selection = {self.current}
+            self.anchor = self.current
+            if not self.page_layout:
+                self._render_continuous()
+            if at_bottom and self.current < len(self.page_layout):
+                top = self.page_tops[self.current]
+                h = self.page_layout[self.current][3]
+                self.view.yview_moveto(max((top + h - self.view.winfo_height()) / self.scroll_size[1], 0))
+            else:
+                self._scroll_page_to_top(self.current)
+            self._paint_selection()
+            self._update_controls()
+            self._ensure_thumb_visible(self.current)
+            self._redraw_ghost()
+            return
         self.current = max(0, min(index, len(self.doc) - 1))
         self.selection = {self.current}
         self.anchor = self.current
@@ -4971,6 +5360,7 @@ class App:
         self.view.focus_set()
 
     def _doc_changed(self, structure=False, pages=()):
+        self._clear_text_selection()
         n = len(self.doc) if self.doc else 0
         self.current = min(self.current, max(n - 1, 0))
         self.selection = {i for i in self.selection if i < n} or ({self.current} if n else set())
@@ -4979,10 +5369,12 @@ class App:
         if structure:
             self.thumb_photos.clear()
             self.tab.ov_photos.clear()
+            self.page_photos.clear()
         else:
             for i in pages:
                 self.thumb_photos.pop(i, None)
                 self.tab.ov_photos.pop(i, None)
+                self.page_photos.pop(i, None)
         self._layout_thumbs()
         self._render_page()
         self._update_controls()
@@ -5133,8 +5525,11 @@ class App:
             self.anchor = i
         if self.current != i:
             self.current = i
-            self._render_page()
-            self.view.yview_moveto(0)
+            if self._continuous_active():
+                self._scroll_page_to_top(i)
+            else:
+                self._render_page()
+                self.view.yview_moveto(0)
         self._paint_selection()
         self._update_controls()
         self._page_drag = {"tab": self.tab, "index": i, "x": event.x_root, "y": event.y_root, "active": False,
@@ -5343,13 +5738,176 @@ class App:
         max_z = (MAX_RENDER_PX / (r.width * r.height)) ** 0.5
         return max(0.05, min(z, max_z))
 
+    # ---- scorrimento continuo (sola lettura: tutte le pagine impilate) ----
+    def _continuous_active(self):
+        return (self.scroll_mode == "continuous" and self.tool is None
+                and not self._editing and not self.overview and bool(self.doc))
+
     def _render_page(self, without=None):
+        """Dispatcher: vista continua in sola lettura, altrimenti la pagina singola di sempre."""
+        if self._continuous_active() and without is None:
+            self._render_continuous()
+        else:
+            self._render_single(without=without)
+
+    def _continuous_zoom(self):
+        rects = [self.doc[i].rect for i in range(len(self.doc))]
+        cw = max(self.view.winfo_width() - 2 * PAD, 50)
+        if self.zoom_mode in ("width", "page"):
+            z = cw / max(r.width for r in rects)      # adatta alla pagina più larga
+        else:
+            z = self.zoom * self.px_per_pt
+        cur = self.doc[self.current].rect
+        max_z = (MAX_RENDER_PX / (cur.width * cur.height)) ** 0.5
+        return max(0.05, min(z, max_z))
+
+    def _render_continuous(self):
+        """Impila tutte le pagine; rasterizza solo quelle visibili (rendering pigro)."""
+        c = self.view
+        self._building_continuous = True
+        c.delete("all")
+        self.page_photo = None
+        self.page_stamps = []
+        self._page_lines = self._page_words = None
+        n = len(self.doc)
+        z = self.cur_zoom = self._continuous_zoom()
+        if self.page_zoom != z:                       # zoom cambiato: i raster non valgono più
+            self.page_photos.clear()
+            self.page_zoom = z
+        widths = [self.doc[i].rect.width * z for i in range(n)]
+        heights = [self.doc[i].rect.height * z for i in range(n)]
+        total_w = max(c.winfo_width(), (max(widths) if n else 0) + 2 * PAD)
+        self.page_tops, self.page_layout = [], []
+        y = PAD
+        for i in range(n):
+            w, h = widths[i], heights[i]
+            ox = (total_w - w) / 2
+            self.page_tops.append(y)
+            self.page_layout.append((ox, y, w, h))
+            c.create_rectangle(ox + 4, y + 4, ox + w + 4, y + h + 4, fill="#3c3d44", outline="")
+            c.create_rectangle(ox, y, ox + w, y + h, fill="white", outline="#a0a0a8", tags=f"pg{i}")
+            if i in self.page_photos:
+                c.create_image(ox, y, anchor="nw", image=self.page_photos[i], tags=f"pg{i}")
+            y += h + CONT_GAP
+        total_h = (y - CONT_GAP + PAD) if n else 0
+        self.scroll_size = (total_w, max(total_h, c.winfo_height()))
+        c.configure(scrollregion=(0, 0, *self.scroll_size), cursor="arrow")
+        self._building_continuous = False
+        self._scroll_page_to_top(self.current, only_if_outside=True)
+        self._schedule_continuous_render()
+        self._draw_find_marks()
+
+    def _schedule_continuous_render(self):
+        if self._cont_job is None:
+            self._cont_job = self.root.after(20, self._render_continuous_step)
+
+    def _render_continuous_step(self):
+        self._cont_job = None
+        if not self._continuous_active() or not self.page_layout:
+            return
+        c = self.view
+        top = c.canvasy(0) - 300
+        bottom = c.canvasy(c.winfo_height()) + 300
+        around = self._page_at_y(c.canvasy(c.winfo_height() / 2)) or 0
+        for i, (ox, oy, w, h) in enumerate(self.page_layout):
+            if oy + h < top or i in self.page_photos:
+                continue
+            if oy > bottom:
+                break
+            if w * h > MAX_RENDER_PX:                 # pagina enorme: resta il segnaposto bianco
+                continue
+            pix = self.doc[i].get_pixmap(matrix=pymupdf.Matrix(self.cur_zoom, self.cur_zoom), alpha=False)
+            self.page_photos[i] = photo_from_pixmap(pix)
+            c.delete(f"pg{i}")
+            c.create_image(ox, oy, anchor="nw", image=self.page_photos[i], tags=f"pg{i}")
+            self._trim_page_cache(around)
+            self._cont_job = self.root.after(1, self._render_continuous_step)
+            return
+
+    def _trim_page_cache(self, around):
+        """Scarta i raster lontani dalla pagina visibile, per tenere bassa la memoria."""
+        for j in [k for k in self.page_photos if abs(k - around) > CONT_CACHE]:
+            del self.page_photos[j]
+            if j < len(self.page_layout):
+                ox, oy, w, h = self.page_layout[j]
+                self.view.delete(f"pg{j}")
+                self.view.create_rectangle(ox, oy, ox + w, oy + h, fill="white", outline="#a0a0a8",
+                                           tags=f"pg{j}")
+
+    def _page_at_y(self, cy):
+        for i, (_ox, oy, _w, h) in enumerate(self.page_layout):
+            if oy <= cy < oy + h + CONT_GAP:
+                return i
+        return (len(self.page_layout) - 1) if self.page_layout else None
+
+    def _sync_current_from_scroll(self):
+        if not self.page_layout:
+            return
+        c = self.view
+        top = c.canvasy(0)
+        vh = c.winfo_height()
+        bottom = top + vh
+        best, best_ov = None, 0
+        for i, (_ox, oy, _w, h) in enumerate(self.page_layout):
+            if oy > bottom:
+                break
+            if oy + h < top:
+                continue
+            ov = min(bottom, oy + h) - max(top, oy)   # altezza visibile della pagina i
+            if ov > best_ov:
+                best, best_ov = i, ov
+        if best is not None and best_ov > vh * 0.5 and best != self.current:
+            self.current = best                       # solo la corrente, non la selezione
+            self._paint_selection()
+            self._update_controls()
+            self._ensure_thumb_visible(best)
+
+    def _scroll_page_to_top(self, index, only_if_outside=False):
+        if not self.page_tops or index >= len(self.page_tops):
+            return
+        sh = self.scroll_size[1]
+        if not sh:
+            return
+        if only_if_outside:                           # non spostare se una parte della pagina è già visibile
+            vtop, vbottom = self.view.yview()
+            h = self.page_layout[index][3] if index < len(self.page_layout) else 0
+            if (self.page_tops[index] + h) / sh > vtop and self.page_tops[index] / sh < vbottom:
+                return
+        self.view.yview_moveto(max((self.page_tops[index] - PAD) / sh, 0))
+
+    def _enter_single_for_edit(self, page_index=None):
+        """Forza la pagina singola sulla pagina giusta prima di una modifica (nel continuo)."""
+        if page_index is not None:
+            self.current = max(0, min(page_index, len(self.doc) - 1))
+            self.selection = {self.current}
+            self.anchor = self.current
+        self._render_single()
+        self.view.yview_moveto(0.0)
+        self.view.xview_moveto(0.0)
+        self._paint_selection()
+        self._update_controls()
+        self._ensure_thumb_visible(self.current)
+
+    def _apply_scroll_mode(self):
+        mode = self.scroll_mode_var.get()
+        if mode == self.scroll_mode:
+            return
+        self.scroll_mode = mode
+        self.cfg["scroll_mode"] = mode                # salvataggio immediato
+        if self.tool is not None:                     # strumento attivo: resta single, si applica all'uscita
+            return
+        self._render_page()
+        if self._continuous_active():
+            self._scroll_page_to_top(self.current)
+        self._update_controls()
+
+    def _render_single(self, without=None):
         """Mostra la pagina corrente; without = timbro apposto da non disegnare (mentre lo si trascina)."""
         c = self.view
         c.delete("all")
         self.page_photo = None
         self.page_stamps = []
-        self._page_lines = None
+        self._page_lines = self._page_words = None
         if not self.doc:
             text = ("Documento vuoto.\nTrascina qui le pagine dalle miniature di un'altra scheda,\n"
                     "oppure usa «Aggiungi…»." if self.doc is not None else
@@ -5411,6 +5969,20 @@ class App:
     def _zoom_at(self, factor, x=None, y=None):
         if not self.doc:
             return
+        if self._continuous_active():
+            if x is None:
+                x, y = self.view.winfo_width() / 2, self.view.winfo_height() / 2
+            cy = self.view.canvasy(y)
+            i = self._page_at_y(cy) or 0
+            _ox, oy, _w, h = self.page_layout[i]
+            rel = (cy - oy) / max(h, 1)               # posizione verticale dentro la pagina
+            self.zoom_mode = None
+            self.zoom = min(max(self.cur_zoom / self.px_per_pt * factor, 0.1), 8.0)
+            self._render_continuous()
+            noy, nh = self.page_layout[i][1], self.page_layout[i][3]
+            self.view.yview_moveto(max((noy + rel * nh - y) / self.scroll_size[1], 0))
+            self._update_controls()
+            return
         if x is None:
             x, y = self.view.winfo_width() / 2, self.view.winfo_height() / 2
         px, py = self._view_to_page(x, y)
@@ -5435,6 +6007,8 @@ class App:
             return "break"
         if event.state & 0x0001:  # Maiusc: scorrimento orizzontale
             self.view.xview_scroll(step * 3, "units")
+        elif self._continuous_active():
+            self.view.yview_scroll(step * 3, "units")   # scorrimento continuo, niente salto di pagina
         else:
             top, bottom = self.view.yview()
             now = time.monotonic()
@@ -5453,6 +6027,10 @@ class App:
 
     def _on_press(self, event):
         self.view.focus_set()
+        if self._continuous_active():
+            self.view.scan_mark(event.x, event.y)       # continuo in sola lettura: solo pan
+            self.view.configure(cursor="fleur")
+            return
         if self.tool == "stamp":
             self._place_stamp(event.x, event.y)
             return
@@ -5486,10 +6064,18 @@ class App:
             if self.sel_stamp is not None:
                 self.sel_stamp = None
                 self._draw_stamp_marks()
-            self.view.scan_mark(event.x, event.y)
-            self.view.configure(cursor="fleur")
+            self._clear_text_selection()
+            if self.tool is None and self._word_at(event.x, event.y):
+                self._text_sel = {"start": (event.x, event.y)}      # trascinando sul testo: lo seleziona
+                self.view.configure(cursor="xterm")
+            else:
+                self.view.scan_mark(event.x, event.y)
+                self.view.configure(cursor="fleur")
 
     def _on_drag(self, event):
+        if self._text_sel:
+            self._update_text_selection(event.x, event.y)
+            return
         if self._area:
             x0, y0 = self._area
             self.view.coords("area", self.view.canvasx(x0), self.view.canvasy(y0),
@@ -5528,6 +6114,15 @@ class App:
         self.view.configure(cursor="fleur")
 
     def _on_release(self, event):
+        if self._continuous_active():
+            self.view.configure(cursor="arrow")
+            return
+        if self._text_sel:
+            self._text_sel = None       # la selezione resta evidenziata, pronta per Ctrl+C
+            self.view.configure(cursor="xterm" if self._clip_text else "arrow")
+            if self._clip_text:
+                self.status("Testo selezionato: premi Ctrl+C per copiarlo negli appunti.")
+            return
         if self._area:
             self._apply_area(event.x, event.y)
             return
@@ -5554,13 +6149,16 @@ class App:
 
     def _on_motion(self, event):
         self._mouse = (event.x, event.y)
+        if self._continuous_active():
+            return
         if self.tool == "stamp":
             self._redraw_ghost()
         elif self.tool in ("edit_text", "add_text"):
             self._hover_text(event.x, event.y)
         elif self.tool is None and self.doc and not self._drag:
             hit = self._stamp_at(event.x, event.y)
-            self.view.configure(cursor="fleur" if hit else "arrow")
+            cursor = "fleur" if hit else ("xterm" if self._word_at(event.x, event.y) else "arrow")
+            self.view.configure(cursor=cursor)
             self._draw_stamp_marks(hover=hit)
 
     def _on_leave(self, _event):
@@ -5570,6 +6168,31 @@ class App:
             self._draw_stamp_marks()
 
     def _on_double_click(self, event):
+        if self._continuous_active():
+            i = self._page_at_y(self.view.canvasy(event.y))
+            if i is None:
+                return
+            ox, oy, _w, _h = self.page_layout[i]
+            z, pr = self.cur_zoom, self.doc[i].rect
+            px = (self.view.canvasx(event.x) - ox) / z + pr.x0
+            py = (self.view.canvasy(event.y) - oy) / z + pr.y0
+            hit = next((s for s in reversed(placed_objects(self.doc[i]))
+                        if s.rect.contains(pymupdf.Point(px, py))), None)
+            if hit is None:                           # doppio clic sul vuoto: niente
+                return
+            self._editing = True
+            try:
+                self._enter_single_for_edit(i)
+                if isinstance(hit, PlacedText):
+                    self.edit_text_box(hit)
+                elif hit:
+                    self.edit_placed_stamp(hit)
+            finally:
+                self._editing = False
+            self._render_page()
+            if self._continuous_active():
+                self._scroll_page_to_top(i, only_if_outside=True)
+            return
         hit = self._stamp_at(event.x, event.y) if self.tool is None else None
         if isinstance(hit, PlacedText):
             self._drag = None
@@ -5577,11 +6200,17 @@ class App:
         elif hit:
             self._drag = None
             self.edit_placed_stamp(hit)
+        elif self.tool is None and self._select_word(event.x, event.y):
+            self._text_sel = None       # doppio clic su una parola: la seleziona, pronta per Ctrl+C
+            self.view.configure(cursor="xterm")
+            self.status("Parola selezionata: premi Ctrl+C per copiarla (o trascina per selezionare altro testo).")
         else:
             # due clic veloci nello stesso punto (es. timbrando più pagine di fila) valgono come due clic
             self._on_press(event)
 
     def _on_view_menu(self, event):
+        if self._continuous_active():
+            return
         hit = self._stamp_at(event.x, event.y)
         if not hit:
             return
@@ -5611,6 +6240,12 @@ class App:
     def _canvas_rect(self, r):
         """Rettangolo della pagina vista -> coordinate della tela."""
         z, (ox, oy), pr = self.cur_zoom, self.page_origin, self.doc[self.current].rect
+        return ox + (r.x0 - pr.x0) * z, oy + (r.y0 - pr.y0) * z, ox + (r.x1 - pr.x0) * z, oy + (r.y1 - pr.y0) * z
+
+    def _canvas_rect_page(self, i, r):
+        """Rettangolo della pagina i -> coordinate della tela (vista continua)."""
+        ox, oy, _w, _h = self.page_layout[i]
+        z, pr = self.cur_zoom, self.doc[i].rect
         return ox + (r.x0 - pr.x0) * z, oy + (r.y0 - pr.y0) * z, ox + (r.x1 - pr.x0) * z, oy + (r.y1 - pr.y0) * z
 
     def _stamp_box(self, stamp):
@@ -5819,6 +6454,7 @@ class App:
         self.tool = tool
         self.tool_var.set(tool if tool in TEXT_TOOLS else "")
         self._area = None
+        self._clear_text_selection()
         self._paint_mode_btn()
         self.view.delete("area", "hover")
         self.view.configure(cursor=TOOL_CURSORS.get(tool, "arrow"))
@@ -5827,6 +6463,13 @@ class App:
         if tool:
             self.view.focus_set()
             self.status(TOOL_HINTS[tool])
+        if self.scroll_mode == "continuous":
+            if tool is not None:                      # si modifica: pagina singola sulla pagina guardata
+                self._enter_single_for_edit(self.current)
+            else:                                     # strumento tolto: riprende il continuo
+                self._render_page()
+                if self._continuous_active():
+                    self._scroll_page_to_top(self.current, only_if_outside=True)
 
     def _paint_mode_btn(self):
         if self.stamp_mode:
@@ -5853,6 +6496,76 @@ class App:
     def _text_box_at(self, x, y):
         hit = self._stamp_at(x, y)
         return hit if isinstance(hit, PlacedText) else None
+
+    # --------------------------------- selezione e copia del testo del PDF
+    def _words(self):
+        """Parole della pagina, in ordine di lettura: (x0, y0, x1, y1, testo, blocco, riga, parola)."""
+        if self._page_words is None:
+            self._page_words = self.doc[self.current].get_text("words", sort=True) if self.doc else []
+        return self._page_words
+
+    def _word_at(self, x, y):
+        """La parola del PDF sotto il punto (coordinate della vista), o None."""
+        if not self.doc:
+            return None
+        page = self.doc[self.current]
+        p = pymupdf.Point(self._view_to_page(x, y)) * page.derotation_matrix
+        return next((w for w in self._words() if pymupdf.Rect(w[:4]).contains(p)), None)
+
+    def _nearest_word_index(self, x, y):
+        """Indice della parola sotto il punto, o della più vicina (per la selezione a trascinamento)."""
+        words = self._words()
+        if not words:
+            return None
+        page = self.doc[self.current]
+        p = pymupdf.Point(self._view_to_page(x, y)) * page.derotation_matrix
+        for i, w in enumerate(words):
+            if pymupdf.Rect(w[:4]).contains(p):
+                return i
+        return min(range(len(words)), key=lambda i: abs((pymupdf.Rect(words[i][:4])).tl.y + 6 - p.y) * 2
+                   + abs((words[i][0] + words[i][2]) / 2 - p.x))
+
+    def _clear_text_selection(self):
+        self._text_sel = None
+        self._clip_text = ""
+        self.view.delete("textsel")
+
+    def _select_word(self, x, y):
+        w = self._word_at(x, y)
+        if w:
+            self._set_text_selection([w])
+        return bool(w)
+
+    def _update_text_selection(self, x, y):
+        a = self._nearest_word_index(*self._text_sel["start"])
+        b = self._nearest_word_index(x, y)
+        if a is None or b is None:
+            return
+        lo, hi = sorted((a, b))
+        self._set_text_selection(self._words()[lo:hi + 1])   # intervallo in ordine di lettura
+
+    def _set_text_selection(self, words):
+        self.view.delete("textsel")
+        parts, prev = [], None
+        for w in words:
+            if prev is not None:
+                parts.append(" " if (w[5], w[6]) == prev else "\n")
+            parts.append(w[4])
+            prev = (w[5], w[6])
+        self._clip_text = "".join(parts)
+        page = self.doc[self.current]
+        for w in words:
+            r = pymupdf.Rect(w[:4]) * page.rotation_matrix
+            self.view.create_rectangle(*self._canvas_rect(r), fill="#1a73e8", outline="",
+                                       stipple="gray50", tags="textsel")
+
+    def copy_selection(self):
+        if not self._clip_text:
+            self.status("Nessun testo selezionato. Trascina sul testo o fai doppio clic su una parola, poi Ctrl+C.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self._clip_text)
+        self.status(f"Testo copiato negli appunti ({len(self._clip_text)} caratteri).")
 
     def _hover_text(self, x, y):
         """Evidenzia la casella o la riga che si modificherebbe cliccando."""
@@ -5963,6 +6676,7 @@ class App:
             return
         self._snapshot()
         params = dict(box.params, **{k: r[k] for k in ("text", "font", "size", "color")})
+        params["underline"] = r.get("underline", params.get("underline", False))
         self._write_text(self.doc[self.current], params, replace=box)
         self._doc_changed(pages=[self.current])
         self.status("Casella di testo modificata. (Ctrl+Z per annullare)")
@@ -5988,7 +6702,7 @@ class App:
         style = {k: r[k] for k in ("font", "size", "color")}
         self.cfg["text_style"] = style
         self._snapshot()
-        self._write_text(page, place(dict(style, text=r["text"])))
+        self._write_text(page, place(dict(style, text=r["text"], underline=r.get("underline", False))))
         self._doc_changed(pages=[self.current])
         self.status("Testo aggiunto: trascinalo per spostarlo, doppio clic per correggerlo. (Ctrl+Z per annullare)")
 
@@ -6039,11 +6753,20 @@ class App:
             f["pos"] = (f["pos"] + step) % len(hits)
         page_no, rect = hits[f["pos"]]
         self.find_lbl.configure(text=f"{f['pos'] + 1} di {len(hits)}")
-        if page_no != self.current:
-            self.go_to(page_no)
-        else:
+        drect = rect * self.doc[page_no].rotation_matrix
+        if self._continuous_active():
+            self.current = page_no
+            self._paint_selection()
+            self._update_controls()
+            self._ensure_thumb_visible(page_no)
             self._draw_find_marks()
-        self._scroll_to(rect * self.doc[page_no].rotation_matrix)
+            self._scroll_to_page(page_no, drect)
+        else:
+            if page_no != self.current:
+                self.go_to(page_no)
+            else:
+                self._draw_find_marks()
+            self._scroll_to(drect)
 
     def clear_find(self, keep_text=False):
         self._find = None
@@ -6058,6 +6781,15 @@ class App:
         f = self._find
         if not f or f["doc"] is not self.doc or not self.doc:
             return
+        if self._continuous_active():
+            if not self.page_layout:
+                return
+            for k, (i, r) in enumerate(f["hits"]):
+                active = k == f["pos"]
+                self.view.create_rectangle(*self._canvas_rect_page(i, r * self.doc[i].rotation_matrix),
+                                           tags="find", outline="#e8710a" if active else "#f4b400",
+                                           width=2 if active else 1, fill="#ffd54f", stipple="gray25")
+            return
         page = self.doc[self.current]
         for k, (i, r) in enumerate(f["hits"]):
             if i == self.current:
@@ -6069,6 +6801,19 @@ class App:
     def _scroll_to(self, rect):
         """Scorre la vista perché il rettangolo (pagina vista) sia visibile."""
         x0, y0, x1, y1 = self._canvas_rect(rect)
+        sw, sh = self.scroll_size
+        vw, vh = self.view.winfo_width(), self.view.winfo_height()
+        left, top = self.view.canvasx(0), self.view.canvasy(0)
+        if y0 < top or y1 > top + vh:
+            self.view.yview_moveto(max(y0 - vh / 3, 0) / sh)
+        if x0 < left or x1 > left + vw:
+            self.view.xview_moveto(max(x0 - vw / 3, 0) / sw)
+
+    def _scroll_to_page(self, i, rect):
+        """Come _scroll_to ma nella vista continua: il rettangolo è sulla pagina i."""
+        if i >= len(self.page_layout):
+            return
+        x0, y0, x1, y1 = self._canvas_rect_page(i, rect)
         sw, sh = self.scroll_size
         vw, vh = self.view.winfo_width(), self.view.winfo_height()
         left, top = self.view.canvasx(0), self.view.canvasy(0)
@@ -6129,6 +6874,7 @@ class App:
             for i in done:
                 tab.thumb_photos.pop(i, None)
                 tab.ov_photos.pop(i, None)
+                tab.page_photos.pop(i, None)
             if tab is self.tab:
                 self._doc_changed(pages=done)
             skipped = f", {stats['skipped']} saltate perché contengono già testo" if stats["skipped"] else ""
@@ -6142,6 +6888,38 @@ class App:
                 on_done()
 
         self.root.after(10, step)
+
+    def cmd_print(self):
+        if not self.doc:
+            return
+        default, printers = list_printers()
+        if not printers:
+            messagebox.showwarning(APP_NAME, "Nessuna stampante installata su questo PC.", parent=self.root)
+            return
+        dialog = PrintDialog(self.root, self.current, sorted(self.selection), len(self.doc), printers, default)
+        self.root.wait_window(dialog.top)
+        if not dialog.result:
+            return
+        printer, pages, copies = dialog.result
+        total = len(pages) * copies
+        progress = ProgressWindow(self.root, "Stampa in corso", maximum=total)
+
+        def on_progress(n, tot):
+            progress.update(n, f"Pagina {n + 1} di {tot}…")
+            return not progress.cancelled
+
+        try:
+            ok = print_document(printer, self.doc, pages, copies, on_progress)
+        except Exception as exc:
+            progress.close()
+            messagebox.showerror(APP_NAME, f"Stampa non riuscita:\n{exc}", parent=self.root)
+            return
+        progress.close()
+        if ok:
+            extra = f" × {copies} copie" if copies > 1 else ""
+            self.status(f"Inviato in stampa a «{printer}»: {len(pages)} pagine{extra}.")
+        else:
+            self.status("Stampa annullata.")
 
     def cmd_export_word(self):
         if not self.doc:

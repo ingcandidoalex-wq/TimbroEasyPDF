@@ -337,7 +337,8 @@ divisione, vista d'insieme, ricerca.</li>
 Trascina una scheda per cambiarne l'ordine.</li>
 <li><b>Pagine</b>: le miniature. Clic per andare alla pagina, Ctrl+clic e Maiusc+clic per sceglierne più
 d'una; trascinale per riordinarle o portarle in un altro PDF.</li>
-<li><b>Pagina</b>: rotellina per scorrere, Ctrl+rotellina per lo zoom.</li>
+<li><b>Pagina</b>: rotellina per scorrere, Ctrl+rotellina per lo zoom. Dal menu <b>Visualizza</b> scegli
+se scorrere una pagina per volta o in modo continuo (tutte le pagine di seguito).</li>
 <li><b>Timbri e firme</b>: la galleria dei timbri salvati e le impostazioni di quello scelto.</li>
 </ol>
 <p>Tutte le modifiche valgono per la scheda attiva e vanno salvate con <b>Salva…</b> (Ctrl+S).
@@ -385,11 +386,15 @@ Il vecchio testo viene eliminato davvero e il nuovo è scritto nello stesso punt
 Nelle scansioni spunta <b>Copri con il bianco lo sfondo</b>.</p>
 <p><b>Aggiungi testo</b>: clicca dove scrivere. Le caselle si trascinano per spostarle anche con lo
 strumento attivo; un clic le corregge. <b>Bianchetto</b> e <b>Oscura</b>: trascina un rettangolo,
-quanto c'è sotto viene cancellato davvero.</p>"""),
+quanto c'è sotto viene cancellato davvero.</p>
+<p><b>Selezionare e copiare il testo</b>: senza strumenti attivi, trascina il mouse sul testo della
+pagina (o fai doppio clic su una parola) per evidenziarlo, poi <b>Ctrl+C</b> per copiarlo negli
+appunti.</p>"""),
     ("La finestra del testo", "dialogo_testo", 75, """
 <p>Scrivi il testo (Invio va a capo, Ctrl+Invio conferma), scegli font, dimensione e colore: il testo
 nel riquadro prende subito il font e il colore scelti e, mentre scrivi, compare anche sulla pagina, nel
-punto e nella misura in cui verrà scritto. La finestra si sposta da sola per non coprirlo.
+punto e nella misura in cui verrà scritto. Con i pulsanti <b>G</b>, <b>C</b> e <b>S</b> lo rendi
+grassetto, corsivo o sottolineato. La finestra si sposta da sola per non coprirlo.
 L'ultimo stile usato viene ricordato.</p>"""),
     ("Vista d'insieme di tutti i PDF", "vista_insieme", 100, """
 <p><b>Vista d'insieme</b> (F4) mostra al posto della pagina le miniature di tutti i PDF aperti, una
@@ -409,7 +414,9 @@ invisibile. Da quel momento si può cercare, copiare, correggere ed esportare in
     ("Cercare", "ricerca", 100, """
 <p>Scrivi nella casella <b>Cerca</b> (1) e premi Invio: i risultati si evidenziano sulla pagina (2);
 ▲ ▼ passano al precedente e al successivo.</p>
-<p><b>Esporta in Word…</b> crea un documento Word usando Microsoft Word installato sul PC.</p>"""),
+<p><b>Esporta in Word…</b> crea un documento Word usando Microsoft Word installato sul PC.
+<b>File › Stampa…</b> (Ctrl+P) manda il documento alla stampante: scegli stampante, quali pagine
+(tutte, la corrente o un intervallo) e il numero di copie.</p>"""),
     ("Sistemare barre e pannelli", "disposizione", 100, """
 <p>Trascina la maniglia ⋮ di una barra (1) verso un lato della finestra per agganciarla lì: in alto, in
 basso, a sinistra o a destra. Trascina l'intestazione di un pannello (2) per portarlo su un altro lato;
@@ -448,6 +455,7 @@ SHORTCUTS = """
 <tr><td>Ctrl+M</td><td>Modifica testo</td><td>Ctrl+T</td><td>Aggiungi testo</td></tr>
 <tr><td>Ctrl+B</td><td>Bianchetto</td><td>Ctrl+Maiusc+B</td><td>Oscura</td></tr>
 <tr><td>Ctrl+Maiusc+O</td><td>Riconosci testo (OCR)</td><td>Ctrl+F</td><td>Cerca</td></tr>
+<tr><td>Ctrl+C</td><td>Copia il testo selezionato</td><td>Ctrl+P</td><td>Stampa</td></tr>
 <tr><td>T</td><td>Modalità timbro</td><td>1–9</td><td>Scegli il timbro</td></tr>
 <tr><td>Ctrl+Maiusc+N</td><td>Timbro da immagine</td><td>Ctrl+Maiusc+F</td><td>Crea firma</td></tr>
 <tr><td>Ctrl+Maiusc+M</td><td>Modifica il timbro</td><td>Ctrl+Maiusc+→ / ←</td><td>Ruota il timbro</td></tr>

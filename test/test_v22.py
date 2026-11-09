@@ -246,9 +246,11 @@ def check(release=None, error=None, manual=True):
     pump(1.5)
 
 
-check(("2.3", "https://github.com/x/releases/tag/v2.3", "Novità varie"))
-assert opened == ["https://github.com/x/releases/tag/v2.3"], opened
-check(("2.2", "u", ""))
+_maj, _min = (int(x) for x in tp.APP_VERSION.split(".")[:2])
+_newer = f"{_maj}.{_min + 1}"                       # una versione più nuova di quella attuale
+check((_newer, f"https://github.com/x/releases/tag/v{_newer}", "Novità varie"))
+assert opened == [f"https://github.com/x/releases/tag/v{_newer}"], opened
+check((tp.APP_VERSION, "u", ""))                    # stessa versione: già aggiornato
 assert opened == [] and "ultima versione" in infos[0], infos
 import urllib.error  # noqa: E402
 check(error=urllib.error.HTTPError("u", 404, "Not Found", None, None))
