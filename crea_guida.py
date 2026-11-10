@@ -182,7 +182,9 @@ def shots():
     tp.set_dpi_awareness()
     root = tk.Tk()
     app = tp.App(root)
-    root.geometry("1360x860+20+20")
+    for key in ("text", "pages", "stamps"):   # nella guida le barre e il pannello si mostrano aperti
+        app._set_visible(key, True)
+    root.geometry("1420x900+20+20")
     settle(root, 1)
     docs = sample_documents()
     app.library.add(sample_stamp(), "Timbro", width_mm=38)
@@ -329,13 +331,16 @@ SECTIONS = [
     ("La finestra", "finestra", 100, """
 <p>{APP} apre, ruota, unisce, timbra, firma e modifica i PDF. La finestra è divisa in zone:</p>
 <ol>
-<li><b>Barra principale</b>: apri, nuovo documento, aggiungi file, salva; annulla e ripristina; pagine,
-zoom, rotazione e ordine delle pagine.</li>
-<li><b>Barra del testo</b>: modifica e aggiunta di testo, bianchetto, OCR, esportazione in Word, unione e
-divisione, vista d'insieme, ricerca.</li>
+<li><b>Barra principale</b>: apri, nuovo, salva (solo icona), aggiungi file; annulla e ripristina; pagine,
+zoom, rotazione, ordine delle pagine e ricerca. A destra gli interruttori <b>Testo</b>, <b>Pagine</b> e
+<b>Timbri</b> aprono e chiudono i gruppi di strumenti e il pannello dei timbri (partono chiusi). Se la
+finestra è stretta, la barra va a capo da sola.</li>
+<li><b>Barra del testo</b> (interruttore «Testo»): modifica e aggiunta di testo, bianchetto, oscura, OCR,
+esportazione in Word. <b>Barra delle pagine</b> (interruttore «Pagine»): unisci schede, dividi, vista
+d'insieme.</li>
 <li><b>Schede</b>: ogni PDF aperto ha la sua scheda. Il pallino ● indica modifiche da salvare.
 Trascina una scheda per cambiarne l'ordine.</li>
-<li><b>Pagine</b>: le miniature. Clic per andare alla pagina, Ctrl+clic e Maiusc+clic per sceglierne più
+<li><b>Miniature</b>: clic per andare alla pagina, Ctrl+clic e Maiusc+clic per sceglierne più
 d'una; trascinale per riordinarle o portarle in un altro PDF.</li>
 <li><b>Pagina</b>: rotellina per scorrere, Ctrl+rotellina per lo zoom. Dal menu <b>Visualizza</b> scegli
 se scorrere una pagina per volta o in modo continuo (tutte le pagine di seguito).</li>
@@ -418,10 +423,13 @@ invisibile. Da quel momento si può cercare, copiare, correggere ed esportare in
 <b>File › Stampa…</b> (Ctrl+P) manda il documento alla stampante: scegli stampante, quali pagine
 (tutte, la corrente o un intervallo) e il numero di copie.</p>"""),
     ("Sistemare barre e pannelli", "disposizione", 100, """
-<p>Trascina la maniglia ⋮ di una barra (1) verso un lato della finestra per agganciarla lì: in alto, in
-basso, a sinistra o a destra. Trascina l'intestazione di un pannello (2) per portarlo su un altro lato;
-i divisori grigi fra i pannelli si trascinano per allargarli. La barretta sotto la galleria dei timbri
-la allunga. Tutto viene ricordato; <b>Visualizza › Ripristina disposizione</b> torna all'inizio.</p>"""),
+<p>Gli interruttori <b>Testo</b>, <b>Pagine</b>, <b>Timbri</b> in alto a destra (e le stesse voci nel menu
+<b>Visualizza</b>) mostrano e nascondono i gruppi di strumenti e il pannello dei timbri. Trascina la
+maniglia ⋮ di una barra (1) verso un lato della finestra per agganciarla lì; trascina l'intestazione di un
+pannello (2) per spostarlo; i divisori grigi si trascinano per allargare i pannelli. Da
+<b>Visualizza › Aspetto</b> cambi il tema grafico (Windows moderno o classico, chiaro, standard…).
+Col <b>tasto destro</b> sulla pagina compare un menù che cambia secondo il punto e lo stato. Tutto viene
+ricordato; <b>Visualizza › Ripristina disposizione</b> torna all'inizio.</p>"""),
     ("Archivio dei timbri e altri PC", "archivio", 70, """
 <p>Tutti i timbri e le firme stanno in un unico file, <i>timbri.tpdf</i>, creato da solo se manca.
 Da <b>Timbro › Archivio dei timbri</b> puoi:</p>

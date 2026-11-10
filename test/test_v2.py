@@ -40,6 +40,8 @@ def use_pc(name):
 def new_app(geometry="1400x940+20+20"):
     root = tk.Tk()
     app = tp.App(root)
+    for _k in ("text", "pages", "stamps"):   # il test lavora con tutte le barre/pannelli visibili
+        app._set_visible(_k, True)
     root.geometry(geometry)
     root.attributes("-topmost", True)
     root.update()
@@ -296,6 +298,7 @@ root.destroy()
 root, app = new_app()
 assert app.layout["panels"] == saved_layout["panels"] and app.thumbs_horizontal and app._stamps_horizontal
 app.reset_layout()
+app._set_visible("stamps", True)   # il reset lo richiude: lo riapro per riorientarlo (verticale)
 pump(root, 0.3)
 assert not app.thumbs_horizontal and not app._stamps_horizontal
 print("disposizione in basso ricordata alla riapertura e ripristinabile: ok")

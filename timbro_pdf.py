@@ -32,7 +32,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -52,8 +52,23 @@ TILE_W, TILE_H = 97, 62        # riquadri della galleria dei timbri
 GALLERY_H = 2 * (TILE_H + 26) + 6
 MAX_STAMP_PX = 1600            # lato massimo dell'immagine del timbro salvata
 MAX_RENDER_PX = 40_000_000     # limite di pixel per il rendering della pagina
-ICON_FONT = Path(r"C:\Windows\Fonts\segmdl2.ttf")   # font di icone di Windows (Segoe MDL2 Assets)
-ICON_COLOR = "#303030"
+SYS32 = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32"
+# icone colorate di Windows, estratte dalle librerie di sistema: azione -> (libreria, indice)
+WIN_ICONS = {
+    "open": ("imageres.dll", 4),     # Apri (cartella aperta)
+    "new": ("imageres.dll", 2),      # Nuovo documento
+    "add": ("shell32.dll", 45),      # Aggiungi file (cartella con freccia)
+    "save": ("imageres.dll", 23),    # Salva (dischetto)
+    "print": ("shell32.dll", 16),    # Stampa
+    "delete": ("imageres.dll", 84),  # Elimina (X rossa)
+    "search": ("shell32.dll", 22),   # Cerca (lente)
+    "archive": ("shell32.dll", 30),  # Archivio (scatola)
+}
+# le voci che prima usavano un glifo Segoe MDL2 -> l'azione con icona colorata (le altre restano senza icona)
+MDL2_TO_WIN = {"E8E5": "open", "E7C3": "new", "E710": "add", "E74E": "save", "E749": "print",
+               "E74D": "delete", "E721": "search", "E8B7": "archive"}
+PAGE_SIZES = {"A4": (595, 842), "A3": (842, 1191), "A5": (420, 595), "A6": (298, 420),
+              "Lettera": (612, 792), "Legale": (612, 1008)}   # larghezza, altezza in punti (verticale)
 UNDO_LIMIT = 30
 UNDO_MAX_BYTES = 400 * 1024 * 1024
 OCR_DPI = 300                  # risoluzione a cui si legge la pagina per l'OCR
@@ -119,11 +134,21 @@ I pulsanti ↺ e ↻ ruotano al volo il timbro selezionato dei gradi scritti fra
 i due (es. 90 o 10); gli stessi gradi valgono nell'editor e con il tasto destro
 sui timbri della pagina. Con angoli diversi da 90° gli angoli restano trasparenti.
 
-DISPOSIZIONE
-Trascina la maniglia ⋮ di una barra di pulsanti verso un lato della finestra
-per agganciarla lì; trascina l'intestazione di un pannello (Pagine, Timbri)
-per portarlo a destra o a sinistra, e il divisorio per allargarlo.
-Disposizione e finestra vengono ricordate; Visualizza ▸ Ripristina disposizione.
+DISPOSIZIONE E ASPETTO
+In alto a destra gli interruttori Testo, Pagine e Timbri aprono e chiudono i
+gruppi di strumenti e il pannello dei timbri (anche dal menu Visualizza); partono
+chiusi e lo stato è ricordato. Se la finestra è stretta, la barra va a capo da sola.
+Trascina la maniglia ⋮ di una barra verso un lato per agganciarla lì; trascina
+l'intestazione di un pannello (Miniature, Timbri) per spostarlo, e il divisorio per
+allargarlo. Da Visualizza ▸ Aspetto scegli il tema grafico (Windows moderno o
+classico, chiaro, standard…). Tutto viene ricordato; Visualizza ▸ Ripristina
+disposizione torna all'inizio.
+
+MENÙ COL TASTO DESTRO
+Il tasto destro sulla pagina apre un menù che cambia secondo il punto e lo stato:
+sopra un timbro o una casella (modifica, ruota, elimina), con del testo selezionato
+(copia), su un'area libera (aggiungi testo, bianchetto, timbro, ruota, stampa),
+senza documenti aperti (apri o nuovo).
 
 ARCHIVIO DEI TIMBRI
 Tutti i timbri stanno in un unico file (timbri.tpdf), creato da solo se manca.
@@ -154,6 +179,8 @@ si apre in una nuova scheda.
 scegli e un numero progressivo (nome_01.pdf, nome_02.pdf…).
 
 SCHEDE E PAGINE
+• «Nuovo» (Ctrl+N) crea un documento con una pagina bianca, scegliendo il
+  formato (A4, A3…) e l'orientamento: puoi subito apporre timbri o testo.
 • Ogni PDF aperto ha la sua scheda; le modifiche valgono solo per la scheda
   attiva, che ha il suo «Annulla». «Salva…» salva la scheda attiva.
 • Clic sulle miniature per selezionare, Ctrl+clic / Maiusc+clic per più pagine.
@@ -213,6 +240,59 @@ def set_dpi_awareness():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
+
+
+def extract_win_icon(path, index, size):
+    """Estrae un'icona colorata di Windows (da una libreria di sistema) come Pixmap RGBA, o None."""
+    import ctypes
+    from ctypes import wintypes
+    u32, g32, vp = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.c_void_p
+
+    class BITMAP(ctypes.Structure):
+        _fields_ = [("bmType", wintypes.LONG), ("bmWidth", wintypes.LONG), ("bmHeight", wintypes.LONG),
+                    ("bmWidthBytes", wintypes.LONG), ("bmPlanes", wintypes.WORD), ("bmBitsPixel", wintypes.WORD),
+                    ("bmBits", vp)]
+
+    class ICONINFO(ctypes.Structure):
+        _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD), ("yHotspot", wintypes.DWORD),
+                    ("hbmMask", vp), ("hbmColor", vp)]
+
+    class BMIH(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPPM", wintypes.LONG), ("biYPPM", wintypes.LONG),
+                    ("biClrUsed", wintypes.DWORD), ("biClrImp", wintypes.DWORD)]
+
+    u32.PrivateExtractIconsW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_int, ctypes.c_int, vp, vp,
+                                         ctypes.c_uint, wintypes.DWORD]
+    u32.GetIconInfo.argtypes = [vp, vp]
+    g32.GetObjectW.argtypes = [vp, ctypes.c_int, vp]
+    u32.GetDC.argtypes, u32.GetDC.restype = [vp], vp
+    u32.ReleaseDC.argtypes = [vp, vp]
+    g32.GetDIBits.argtypes = [vp, vp, wintypes.UINT, wintypes.UINT, vp, vp, wintypes.UINT]
+    for fn in (u32.DestroyIcon, g32.DeleteObject):
+        fn.argtypes = [vp]
+    hicon = vp()
+    if u32.PrivateExtractIconsW(path, index, size, size, ctypes.byref(hicon), None, 1, 0) < 1 or not hicon.value:
+        return None
+    ii = ICONINFO()
+    u32.GetIconInfo(hicon, ctypes.byref(ii))
+    bm = BITMAP()
+    g32.GetObjectW(ii.hbmColor, ctypes.sizeof(bm), ctypes.byref(bm))
+    w, h = bm.bmWidth, bm.bmHeight
+    buf = ctypes.create_string_buffer(w * h * 4)
+    hdc = u32.GetDC(None)
+    g32.GetDIBits(hdc, ii.hbmColor, 0, h, buf, ctypes.byref(BMIH(40, w, -h, 1, 32, 0, 0, 0, 0, 0, 0)), 0)
+    u32.ReleaseDC(None, hdc)
+    raw = buf.raw
+    rgba = bytearray(w * h * 4)
+    rgba[0::4], rgba[1::4], rgba[2::4], rgba[3::4] = raw[2::4], raw[1::4], raw[0::4], raw[3::4]   # BGRA -> RGBA
+    g32.DeleteObject(ii.hbmColor)
+    g32.DeleteObject(ii.hbmMask)
+    u32.DestroyIcon(hicon)
+    if not any(rgba[3::4]):          # icona vecchia senza canale alpha: opaca
+        rgba[3::4] = b"\xff" * (w * h)
+    return pymupdf.Pixmap(pymupdf.csRGB, w, h, bytes(rgba), True)
 
 
 def list_printers():
@@ -2304,6 +2384,42 @@ class PrintDialog:
         self.top.destroy()
 
 
+class NewPageDialog:
+    """Scelta del formato e dell'orientamento per il nuovo documento."""
+
+    def __init__(self, parent, fmt, landscape):
+        self.result = None   # (formato, orizzontale)
+        top = self.top = tk.Toplevel(parent)
+        top.title("Nuovo documento")
+        top.transient(parent)
+        top.resizable(False, False)
+        body = ttk.Frame(top, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        row = ttk.Frame(body)
+        row.pack(fill=tk.X)
+        ttk.Label(row, text="Formato della pagina:").pack(side=tk.LEFT)
+        self.fmt = tk.StringVar(value=fmt if fmt in PAGE_SIZES else "A4")
+        ttk.Combobox(row, textvariable=self.fmt, values=list(PAGE_SIZES), state="readonly",
+                     width=12).pack(side=tk.LEFT, padx=(6, 0))
+        self.orient = tk.StringVar(value="landscape" if landscape else "portrait")
+        orow = ttk.Frame(body)
+        orow.pack(anchor="w", pady=(12, 0))
+        ttk.Radiobutton(orow, text="Verticale", value="portrait", variable=self.orient).pack(side=tk.LEFT)
+        ttk.Radiobutton(orow, text="Orizzontale", value="landscape",
+                        variable=self.orient).pack(side=tk.LEFT, padx=(12, 0))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, pady=(14, 0))
+        ttk.Button(buttons, text="Annulla", command=top.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Crea", command=self._ok).pack(side=tk.RIGHT, padx=6)
+        top.bind("<Return>", lambda e: self._ok())
+        top.bind("<Escape>", lambda e: top.destroy())
+        place_dialog(top, parent)
+
+    def _ok(self):
+        self.result = (self.fmt.get(), self.orient.get() == "landscape")
+        self.top.destroy()
+
+
 class ProgressWindow:
     """Finestra di avanzamento modale; «Annulla» imposta cancelled (se can_cancel)."""
 
@@ -2344,10 +2460,11 @@ class ProgressWindow:
 # ---------------------------------------------------------------- disposizione della finestra
 # barre: lato e ordine nel lato; pannelli: lato e ordine dal bordo (0 = il più esterno);
 # larghezze in pixel (0 = la minima necessaria al contenuto)
-DEFAULT_LAYOUT = {"bars": {"main": ["top", 0], "text": ["top", 1]},
+DEFAULT_LAYOUT = {"bars": {"main": ["top", 0], "text": ["top", 1], "pages": ["top", 2]},
                   "panels": {"thumbs": ["left", 0], "stamps": ["right", 0]},
                   "widths": {"thumbs": 180, "stamps": 0},      # pannelli a sinistra/destra
                   "heights": {"thumbs": 210, "stamps": 0},     # pannelli in alto/in basso
+                  "visible": {"text": False, "pages": False, "stamps": False},   # gruppi a scomparsa
                   "gallery_h": 0}                              # altezza della galleria dei timbri
 SIDE_NAMES = {"top": "in alto", "bottom": "in basso", "left": "a sinistra", "right": "a destra"}
 SASH_BG = "#b9bbc4"            # colore dei divisori trascinabili fra i pannelli
@@ -2357,9 +2474,85 @@ def default_layout():
     return json.loads(json.dumps(DEFAULT_LAYOUT))
 
 
-def bar_button(group, text, command, width=None, image=None):
-    kw = {"image": image, "compound": tk.LEFT} if image else {}
-    ttk.Button(group, text=text, command=command, width=width, **kw).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+class Tooltip:
+    """Piccolo suggerimento che compare sotto un widget dopo un attimo (per i pulsanti solo-icona)."""
+
+    def __init__(self, widget, text, delay=500):
+        self.widget, self.text, self.delay = widget, text, delay
+        self.tip = self._job = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        self._job = self.widget.after(self.delay, self._show)
+
+    def _show(self):
+        self._job = None
+        if self.tip or not self.widget.winfo_exists():
+            return
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 2
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self.tip, text=self.text, bg="#ffffe0", relief=tk.SOLID, bd=1, justify=tk.LEFT,
+                 font=("Segoe UI", 9), padx=6, pady=2).pack()
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+    def _cancel(self):
+        if self._job:
+            self.widget.after_cancel(self._job)
+            self._job = None
+
+
+def arrow_icon(clockwise, size=20):
+    """Freccia curva (Annulla / Ripristina) disegnata come Pixmap RGBA."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=size, height=size)
+    shape = page.new_shape()
+    cx = cy = size / 2
+    r = size * 0.30
+    a0, a1, steps = math.radians(-25), math.radians(235), 26
+    pts = []
+    for i in range(steps + 1):
+        a = a0 + (a1 - a0) * i / steps
+        x, y = cx + r * math.cos(a), cy - r * math.sin(a)
+        pts.append(pymupdf.Point(size - x if clockwise else x, y))
+    for p0, p1 in zip(pts, pts[1:]):
+        shape.draw_line(p0, p1)
+    tip, prev = pts[-1], pts[-2]
+    dx, dy = tip.x - prev.x, tip.y - prev.y
+    d = math.hypot(dx, dy) or 1
+    dx, dy = dx / d, dy / d
+    hl = size * 0.24
+    for ang in (math.radians(145), math.radians(-145)):
+        rx = dx * math.cos(ang) - dy * math.sin(ang)
+        ry = dx * math.sin(ang) + dy * math.cos(ang)
+        shape.draw_line(tip, pymupdf.Point(tip.x + rx * hl, tip.y + ry * hl))
+    shape.finish(color=(0.13, 0.33, 0.62), width=max(size * 0.11, 1.8), lineCap=1, lineJoin=1)
+    shape.commit()
+    return page.get_pixmap(alpha=True)
+
+
+def bar_button(group, text, command, width=None, image=None, tip=None):
+    kw = {}
+    if image:
+        kw["image"] = image
+        if text:                       # icona + testo; con la sola icona niente compound (resta stretto)
+            kw["compound"] = tk.LEFT
+    button = ttk.Button(group, text=text, command=command, width=width, **kw)
+    # i pulsanti solo-icona restano stretti (larghezza dell'icona); quelli con testo si allargano
+    button.pack(side=tk.LEFT, fill=tk.X if text else tk.NONE, expand=bool(text), padx=1)
+    if tip:
+        Tooltip(button, tip)
+    return button
 
 
 def on_screen(geometry):
@@ -2390,46 +2583,110 @@ class ToolBar(ttk.Frame):
         self.side = None
         self.items = []            # gruppi (Frame) e separatori (None)
         self._separators = []
+        self._rows = []            # righe per il ritorno a capo (barra orizzontale)
+        self._right = None         # gruppo allineato a destra (es. gli interruttori)
+        self._reflow_job = None
+        self._last_w = 0
         bg = ttk.Style().lookup("TFrame", "background") or master.cget("bg")
         self.grip = tk.Label(self, text="⋮", cursor="fleur", fg="#999", bg=bg, font=("Segoe UI", 12, "bold"), padx=3)
         for seq, phase in (("<Button-1>", "press"), ("<B1-Motion>", "motion"), ("<ButtonRelease-1>", "release")):
             self.grip.bind(seq, lambda e, p=phase: on_grip(self, e, p))
+        self.bind("<Configure>", self._on_configure)
 
-    def group(self):
+    def group(self, right=False):
         g = ttk.Frame(self)
         self.items.append(g)
+        if right:
+            self._right = g
         return g
 
     def separator(self):
         self.items.append(None)
 
-    def orient(self, side):
-        """Dispone i gruppi in riga (in alto/in basso) o in colonna (a sinistra/a destra)."""
-        if side == self.side:
-            return
-        self.side = side
-        vertical = side in ("left", "right")
-        for s in self._separators:
-            s.destroy()
-        self._separators = []
+    def _clear(self):
         self.grip.pack_forget()
         for g in self.items:
             if g is not None:
                 g.pack_forget()
+        for s in self._separators:
+            s.destroy()
+        self._separators = []
+        for r in self._rows:
+            r.destroy()
+        self._rows = []
+
+    def orient(self, side):
+        """Dispone i gruppi in riga (in alto/in basso, con ritorno a capo) o in colonna (a sinistra/a destra)."""
+        self.side = side
+        vertical = side in ("left", "right")
+        self._clear()
         self.grip.configure(text="⋯" if vertical else "⋮")
-        self.grip.pack(side=tk.TOP if vertical else tk.LEFT, fill=tk.X if vertical else tk.Y)
-        for g in self.items:
-            if g is None:
-                s = ttk.Separator(self, orient=tk.HORIZONTAL if vertical else tk.VERTICAL)
-                if vertical:
+        if vertical:
+            self.grip.pack(side=tk.TOP, fill=tk.X)
+            for g in self.items:
+                if g is None:
+                    s = ttk.Separator(self, orient=tk.HORIZONTAL)
                     s.pack(side=tk.TOP, fill=tk.X, pady=5)
+                    self._separators.append(s)
                 else:
-                    s.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
+                    g.pack(side=tk.TOP, fill=tk.X, pady=1)
+        else:
+            self.grip.pack(side=tk.LEFT, fill=tk.Y)
+            self._last_w = 0
+            self._reflow()
+
+    def _on_configure(self, _event):
+        if self.side in ("left", "right") or not self.items:
+            return
+        w = self.winfo_width()
+        if w == self._last_w:
+            return
+        self._last_w = w
+        if self._reflow_job:
+            self.after_cancel(self._reflow_job)
+        self._reflow_job = self.after(60, self._reflow)
+
+    def _reflow(self):
+        """Dispone i gruppi su più righe se non ci stanno in larghezza; gli interruttori restano a destra."""
+        self._reflow_job = None
+        if self.side in ("left", "right"):
+            return
+        for s in self._separators:
+            s.destroy()
+        self._separators = []
+        for r in self._rows:
+            r.destroy()
+        self._rows = []
+        for g in self.items:
+            if g is not None:
+                g.pack_forget()
+        avail = self.winfo_width() - self.grip.winfo_reqwidth() - 12
+        if avail < 60:
+            avail = 10 ** 6            # non ancora dimensionata: una riga sola
+        used = [0]
+
+        def new_row():
+            r = ttk.Frame(self)
+            r.pack(side=tk.TOP, fill=tk.X, anchor="w")
+            self._rows.append(r)
+            used[0] = 0
+            return r
+
+        row = new_row()
+        for item in self.items:
+            w = 14 if item is None else (item.update_idletasks() or item.winfo_reqwidth() + 2)
+            if used[0] + w > avail and used[0] > 0:
+                row = new_row()
+                if item is None:
+                    continue          # niente separatore a inizio riga
+            if item is None:
+                s = ttk.Separator(row, orient=tk.VERTICAL)
+                s.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
                 self._separators.append(s)
-            elif vertical:
-                g.pack(side=tk.TOP, fill=tk.X, pady=1)
             else:
-                g.pack(side=tk.LEFT, padx=1)
+                item.pack(in_=row, side=tk.RIGHT if item is self._right else tk.LEFT, padx=1)
+                item.lift()           # i gruppi sono figli della barra: sopra ai frame-riga
+            used[0] += w
 
 
 class PasswordDialog:
@@ -3658,6 +3915,11 @@ class App:
         self._tab_drag = None          # trascinamento di una scheda per riordinarle
         self._dock_drag = None         # trascinamento di una barra o di un pannello
         self.layout = self._load_layout()
+        self.show_text_var = tk.BooleanVar(value=self._is_visible("text"))
+        self.show_pages_var = tk.BooleanVar(value=self._is_visible("pages"))
+        self.show_stamps_var = tk.BooleanVar(value=self._is_visible("stamps"))
+        self._visible_vars = {"text": self.show_text_var, "pages": self.show_pages_var,
+                              "stamps": self.show_stamps_var}
         self._normal_geometry = None   # posizione della finestra quando non è ingrandita
         self.thumb_w = THUMB_W         # larghezza delle miniature: segue quella del pannello
         self._thumb_resize_job = None
@@ -3759,9 +4021,11 @@ class App:
         self._restore_window()
         self._icon = photo_from_pixmap(icon_pixmap(64))
         root.iconphoto(True, self._icon)
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
+        self._style = style = ttk.Style()
+        saved_theme = self.cfg["theme"]
+        theme = saved_theme if saved_theme in style.theme_names() else (
+            "vista" if "vista" in style.theme_names() else style.theme_use())
+        style.theme_use(theme)
         bg = style.lookup("TFrame", "background") or root.cget("bg")
 
         self._build_menu()
@@ -3774,7 +4038,8 @@ class App:
         ttk.Label(status, textvariable=self.status_var).pack(side=tk.LEFT)
         self.info_var = tk.StringVar()
         ttk.Label(status, textvariable=self.info_var).pack(side=tk.RIGHT)
-        self.bars = {"main": self._build_main_bar(), "text": self._build_text_bar()}
+        self.bars = {"main": self._build_main_bar(), "text": self._build_text_bar(),
+                     "pages": self._build_pages_bar()}
 
         # pannelli e documento, separati da divisori trascinabili (la riga grigia):
         # vpaned ha in alto/in basso i pannelli agganciati lì e in mezzo paned, con quelli a sinistra/destra.
@@ -3791,35 +4056,41 @@ class App:
         self._apply_layout()
         root.bind("<Configure>", self._on_root_configure, add=True)
 
-    def _glyph(self, glyph, size=18):
-        """Piccola icona monocromatica dal font di sistema Segoe MDL2; None se non disponibile."""
-        if not glyph:
+    def _glyph(self, glyph, size=20):
+        """Icona colorata di Windows per l'azione (se esiste), altrimenti None (solo testo)."""
+        action = MDL2_TO_WIN.get(glyph)
+        if not action:
             return None
-        key = (glyph, size)
+        key = (action, size)
         if key not in self._icons:
             img = None
             try:
-                if ICON_FONT.exists():
-                    doc = pymupdf.open()
-                    page = doc.new_page(width=size, height=size)
-                    page.insert_font(fontname="ic", fontfile=str(ICON_FONT))
-                    page.insert_text((0, round(size * 0.82)), chr(int(glyph, 16)), fontsize=size,
-                                     fontname="ic", color=hex_to_rgb(ICON_COLOR))
-                    img = photo_from_pixmap(page.get_pixmap(alpha=True))
+                dll, index = WIN_ICONS[action]
+                pix = extract_win_icon(str(SYS32 / dll), index, size)
+                if pix:
+                    img = photo_from_pixmap(pix)
             except Exception:
                 img = None
             self._icons[key] = img
         return self._icons[key]
 
+    def _arrow(self, clockwise):
+        key = ("redo" if clockwise else "undo", 20)
+        if key not in self._icons:
+            self._icons[key] = photo_from_pixmap(arrow_icon(clockwise))
+        return self._icons[key]
+
     def _build_main_bar(self):
         bar = ToolBar(self.root, "main", self._on_grip)
-        for text, glyph, cmd in (("Apri…", "E8E5", self.cmd_open), ("Nuovo", "E7C3", self.cmd_new),
-                                 ("Aggiungi…", "E710", lambda: self.cmd_add(at_end=True)),
-                                 ("Salva…", "E74E", self.cmd_save)):
-            bar_button(bar.group(), text, cmd, image=self._glyph(glyph))
+        g = bar.group()
+        bar_button(g, "", self.cmd_open, image=self._glyph("E8E5"), tip="Apri un PDF  (Ctrl+O)")
+        bar_button(g, "", self.cmd_new, image=self._glyph("E7C3"), tip="Nuovo documento (pagina bianca)  (Ctrl+N)")
+        bar_button(g, "", self.cmd_save, image=self._glyph("E74E"), tip="Salva con nome  (Ctrl+S)")
+        bar_button(bar.group(), "Aggiungi…", lambda: self.cmd_add(at_end=True))
         bar.separator()
-        bar_button(bar.group(), "Annulla", self.undo, image=self._glyph("E7A7"))
-        bar_button(bar.group(), "Ripristina", self.redo, image=self._glyph("E7A6"))
+        g = bar.group()
+        bar_button(g, "", self.undo, image=self._arrow(False), tip="Annulla  (Ctrl+Z)")
+        bar_button(g, "", self.redo, image=self._arrow(True), tip="Ripristina  (Ctrl+Y)")
         bar.separator()
         g = bar.group()
         bar_button(g, "◀", self.prev_page, width=3)
@@ -3837,52 +4108,57 @@ class App:
         self.zoom_lbl.pack(side=tk.LEFT)
         bar_button(g, "+", lambda: self._zoom_at(1.25), width=3)
         bar_button(bar.group(), "Larghezza", lambda: self.set_zoom_mode("width"))
-        bar_button(bar.group(), "Pagina intera", lambda: self.set_zoom_mode("page"), image=self._glyph("E9A6"))
+        bar_button(bar.group(), "Pagina intera", lambda: self.set_zoom_mode("page"))
         bar.separator()
         for text, glyph, cmd in (("↺ Ruota sx", "", lambda: self.rotate(-90)),
                                  ("↻ Ruota dx", "", lambda: self.rotate(90)),
                                  ("▲ Su", "", lambda: self.move_pages(-1)), ("▼ Giù", "", lambda: self.move_pages(1)),
                                  ("Elimina", "E74D", self.delete_pages)):
             bar_button(bar.group(), text, cmd, image=self._glyph(glyph))
-        return bar
-
-    def _build_text_bar(self):
-        bar = ToolBar(self.root, "text", self._on_grip)
-        ttk.Label(bar.group(), text="Testo:").pack(side=tk.LEFT, padx=(2, 4))
-        self.tool_var = tk.StringVar()
-        for value, text, glyph in (("edit_text", "Modifica testo", "E70F"), ("add_text", "+ Aggiungi testo", ""),
-                                   ("whiteout", "Bianchetto", "E75C"), ("blackout", "Oscura", "")):
-            img = self._glyph(glyph)
-            kw = {"image": img, "compound": tk.LEFT} if img else {}
-            ttk.Radiobutton(bar.group(), text=text, value=value, variable=self.tool_var, style="Toolbutton",
-                            command=lambda v=value: self.set_tool(None if self.tool == v else v),
-                            **kw).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
-        bar.separator()
-        bar_button(bar.group(), "Riconosci testo (OCR)…", self.cmd_ocr)
-        bar_button(bar.group(), "Esporta in Word…", self.cmd_export_word)
-        bar.separator()
-        bar_button(bar.group(), "Unisci schede…", self.cmd_merge_tabs)
-        bar_button(bar.group(), "Dividi…", self.cmd_split)
-        self.overview_var = tk.BooleanVar(value=False)
-        ov_icon = self._glyph("E8A9")
-        ov_kw = {"image": ov_icon, "compound": tk.LEFT} if ov_icon else {}
-        ttk.Checkbutton(bar.group(), text="Vista d'insieme", style="Toolbutton", variable=self.overview_var,
-                        command=lambda: self.toggle_overview(self.overview_var.get()),
-                        **ov_kw).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
         bar.separator()
         g = bar.group()
         ttk.Label(g, text="Cerca:").pack(side=tk.LEFT, padx=(0, 4))
         self.find_var = tk.StringVar()
-        self.find_entry = ttk.Entry(g, textvariable=self.find_var, width=20)
+        self.find_entry = ttk.Entry(g, textvariable=self.find_var, width=18)
         self.find_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.find_entry.bind("<Return>", lambda e: self.find(1) or "break")
         self.find_entry.bind("<Shift-Return>", lambda e: self.find(-1) or "break")
         self.find_entry.bind("<Escape>", lambda e: self.clear_find() or "break")
-        g = bar.group()
         bar_button(g, "▲", lambda: self.find(-1), width=3)
         bar_button(g, "▼", lambda: self.find(1), width=3)
-        self.find_lbl = ttk.Label(g, foreground="#555", width=10)
-        self.find_lbl.pack(side=tk.LEFT, padx=6)
+        self.find_lbl = ttk.Label(g, foreground="#555", width=8)
+        self.find_lbl.pack(side=tk.LEFT, padx=4)
+        tg = bar.group(right=True)   # gestione testo / pagine / timbri: sempre a destra (anche a capo)
+        for key, label, tip in (("text", "Testo", "Mostra/nascondi gli strumenti di testo"),
+                                ("pages", "Pagine", "Mostra/nascondi unisci, dividi e vista d'insieme"),
+                                ("stamps", "Timbri", "Mostra/nascondi il pannello dei timbri")):
+            cb = ttk.Checkbutton(tg, text=label, style="Toolbutton", variable=self._visible_vars[key],
+                                 command=lambda k=key: self._set_visible(k, self._visible_vars[k].get()))
+            cb.pack(side=tk.LEFT, padx=1)
+            Tooltip(cb, tip)
+        return bar
+
+    def _build_text_bar(self):
+        bar = ToolBar(self.root, "text", self._on_grip)
+        self.tool_var = tk.StringVar()
+        for value, text in (("edit_text", "Modifica testo"), ("add_text", "+ Aggiungi testo"),
+                            ("whiteout", "Bianchetto"), ("blackout", "Oscura")):
+            ttk.Radiobutton(bar.group(), text=text, value=value, variable=self.tool_var, style="Toolbutton",
+                            command=lambda v=value: self.set_tool(None if self.tool == v else v)
+                            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        bar.separator()
+        bar_button(bar.group(), "Riconosci testo (OCR)…", self.cmd_ocr)
+        bar_button(bar.group(), "Esporta in Word…", self.cmd_export_word)
+        return bar
+
+    def _build_pages_bar(self):
+        bar = ToolBar(self.root, "pages", self._on_grip)
+        bar_button(bar.group(), "Unisci schede…", self.cmd_merge_tabs)
+        bar_button(bar.group(), "Dividi…", self.cmd_split)
+        self.overview_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar.group(), text="Vista d'insieme", style="Toolbutton", variable=self.overview_var,
+                        command=lambda: self.toggle_overview(self.overview_var.get())
+                        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
         return bar
 
     def _panel_header(self, panel, key, title):
@@ -3895,7 +4171,7 @@ class App:
 
     def _build_thumbs_panel(self):
         panel = self.side_panels["thumbs"] = ttk.Frame(self.root)
-        self._panel_header(panel, "thumbs", "Pagine")
+        self._panel_header(panel, "thumbs", "Miniature")
         left = ttk.Frame(panel)
         left.pack(fill=tk.BOTH, expand=True)
         self.thumbs = tk.Canvas(left, width=THUMB_W + 34, height=120, bg="#e4e4ea", highlightthickness=0)
@@ -4039,9 +4315,15 @@ class App:
             for key, value in (saved.get(section) or {}).items():
                 if key in layout[section] and isinstance(value, int) and 0 <= value < 3000:
                     layout[section][key] = value
+        for key, value in (saved.get("visible") or {}).items():
+            if key in layout["visible"] and isinstance(value, bool):
+                layout["visible"][key] = value
         if isinstance(saved.get("gallery_h"), int) and 0 <= saved["gallery_h"] < 2000:
             layout["gallery_h"] = saved["gallery_h"]
         return layout
+
+    def _is_visible(self, key):
+        return self.layout.get("visible", {}).get(key, True)
 
     def _save_layout(self):
         for key, panel in self.side_panels.items():
@@ -4061,7 +4343,8 @@ class App:
         for bar in self.bars.values():
             bar.pack_forget()
         for side in ("top", "bottom", "left", "right"):
-            here = sorted((b for b in self.bars.values() if bars[b.key][0] == side), key=lambda b: bars[b.key][1])
+            here = sorted((b for b in self.bars.values() if bars[b.key][0] == side and self._is_visible(b.key)),
+                          key=lambda b: bars[b.key][1])
             if not here:
                 continue
             dock = self.docks[side]
@@ -4077,7 +4360,7 @@ class App:
                 paned.forget(pane)
 
         def on(side, outer_first=True):   # pannelli di un lato, dal bordo verso il centro o viceversa
-            keys = [k for k, v in panels.items() if v[0] == side]
+            keys = [k for k, v in panels.items() if v[0] == side and self._is_visible(k)]
             return sorted(keys, key=lambda k: panels[k][1] if outer_first else -panels[k][1])
 
         for key in on("top"):
@@ -4176,8 +4459,27 @@ class App:
             self.layout["gallery_h"] = int(self.gallery.cget("height"))
             self._save_layout()
 
+    def _set_visible(self, key, on=None):
+        """Mostra/nasconde una barra (text/pages) o un pannello (stamps); on=None inverte."""
+        vis = self.layout.setdefault("visible", {})
+        vis[key] = (not vis.get(key, True)) if on is None else bool(on)
+        self._apply_layout()
+        self._save_layout()
+        var = self._visible_vars.get(key)
+        if var is not None and var.get() != vis[key]:
+            var.set(vis[key])
+
+    def set_theme(self, name):
+        try:
+            self._style.theme_use(name)
+        except tk.TclError:
+            return
+        self.cfg["theme"] = name
+
     def reset_layout(self):
         self.layout = default_layout()
+        for key, var in self._visible_vars.items():
+            var.set(self._is_visible(key))
         self._apply_layout()
         self._save_layout()
         self.status("Barre e pannelli rimessi nella posizione iniziale.")
@@ -4431,7 +4733,7 @@ class App:
         ic = dict(compound="left")
         f.add_command(label="Apri… (anche più file, ognuno nella sua scheda)", accelerator="Ctrl+O",
                       command=self.cmd_open, image=self._glyph("E8E5"), **ic)
-        f.add_command(label="Nuovo documento vuoto", accelerator="Ctrl+N", command=self.cmd_new,
+        f.add_command(label="Nuovo documento (pagina bianca, A4/A3…)…", accelerator="Ctrl+N", command=self.cmd_new,
                       image=self._glyph("E7C3"), **ic)
         f.add_command(label="Aggiungi PDF/immagini in fondo…", accelerator="Ctrl+I",
                       command=lambda: self.cmd_add(at_end=True), image=self._glyph("E710"), **ic)
@@ -4488,6 +4790,25 @@ class App:
                           variable=self.scroll_mode_var, command=self._apply_scroll_mode)
         v.add_radiobutton(label="Scorrimento continuo (tutte le pagine)", value="continuous",
                           variable=self.scroll_mode_var, command=self._apply_scroll_mode)
+        v.add_separator()
+        v.add_checkbutton(label="Mostra la barra del testo (modifica, bianchetto, OCR…)",
+                          variable=self.show_text_var,
+                          command=lambda: self._set_visible("text", self.show_text_var.get()))
+        v.add_checkbutton(label="Mostra la barra delle pagine (unisci, dividi, vista d'insieme)",
+                          variable=self.show_pages_var,
+                          command=lambda: self._set_visible("pages", self.show_pages_var.get()))
+        v.add_checkbutton(label="Mostra il pannello dei timbri",
+                          variable=self.show_stamps_var,
+                          command=lambda: self._set_visible("stamps", self.show_stamps_var.get()))
+        appearance = tk.Menu(v, tearoff=False)
+        self.theme_var = tk.StringVar(value=self._style.theme_use())
+        theme_labels = {"vista": "Windows (moderno)", "winnative": "Windows classico", "xpnative": "Windows XP",
+                        "clam": "Chiaro (stile Java)", "alt": "Alternativo", "default": "Standard",
+                        "classic": "Classico"}
+        for name in self._style.theme_names():
+            appearance.add_radiobutton(label=theme_labels.get(name, name.capitalize()), value=name,
+                                       variable=self.theme_var, command=lambda n=name: self.set_theme(n))
+        v.add_cascade(label="Aspetto (tema grafico)", menu=appearance)
         v.add_separator()
         v.add_command(label="Ripristina disposizione di barre e pannelli", command=self.reset_layout)
         v.add_separator()
@@ -4974,7 +5295,8 @@ class App:
     def _add_tab(self, tab, switch=True):
         # un documento nuovo ancora vuoto e intatto lascia il posto al PDF aperto
         old = self.tab
-        unused = old.doc is not None and old.path is None and not old.dirty and not len(old.doc)
+        # un documento nuovo e intatto (vuoto o con la sola pagina bianca) lascia il posto al PDF aperto
+        unused = old.doc is not None and old.path is None and not old.dirty and len(old.doc) <= 1
         self.tabs.append(tab)
         if not switch:
             self._refresh_tabbar()
@@ -5013,10 +5335,22 @@ class App:
         if paths:
             self._remember_dir("open", Path(paths[0]).parent)
 
-    def cmd_new(self):
-        self._add_tab(DocTab(pymupdf.open()))
-        self.status("Nuovo documento vuoto: trascina qui le pagine dalle miniature di un'altra scheda "
-                    "(fermati un attimo sulla scheda), oppure usa «Aggiungi…».")
+    def cmd_new(self, fmt=None, landscape=None):
+        if fmt is None:
+            dialog = NewPageDialog(self.root, self.cfg["new_format"] or "A4", bool(self.cfg["new_landscape"]))
+            self.root.wait_window(dialog.top)
+            if not dialog.result:
+                return
+            fmt, landscape = dialog.result
+        self.cfg["new_format"], self.cfg["new_landscape"] = fmt, bool(landscape)
+        w, h = PAGE_SIZES.get(fmt, PAGE_SIZES["A4"])
+        if landscape:
+            w, h = h, w
+        doc = pymupdf.open()
+        doc.new_page(width=w, height=h)       # una pagina bianca, pronta per timbri e testo
+        self._add_tab(DocTab(doc))
+        self.status(f"Nuovo documento {fmt}{' orizzontale' if landscape else ''} con una pagina bianca: apponi "
+                    "un timbro o del testo, oppure aggiungi altre pagine con «Aggiungi…».")
 
     def open_file(self, path):
         """Apre il PDF in una nuova scheda (se è già aperto, passa alla sua scheda)."""
@@ -6209,25 +6543,49 @@ class App:
             self._on_press(event)
 
     def _on_view_menu(self, event):
-        if self._continuous_active():
-            return
-        hit = self._stamp_at(event.x, event.y)
-        if not hit:
-            return
-        self.sel_stamp = hit.index
-        self._draw_stamp_marks()
+        """Menù contestuale: cambia secondo dove si clicca e quali funzioni sono disponibili."""
         menu = tk.Menu(self.root, tearoff=False)
-        if isinstance(hit, PlacedText):
-            menu.add_command(label="Modifica testo…", command=lambda: self.edit_text_box(hit))
-            menu.add_command(label="Elimina questo testo", command=self.delete_selected_stamp)
+        hit = None if self._continuous_active() else self._stamp_at(event.x, event.y)
+        if hit:
+            self.sel_stamp = hit.index
+            self._draw_stamp_marks()
+            if isinstance(hit, PlacedText):
+                menu.add_command(label="Modifica testo…", command=lambda: self.edit_text_box(hit))
+                menu.add_command(label="Elimina questo testo", command=self.delete_selected_stamp)
+            else:
+                step = self.rotate_step
+                menu.add_command(label="Modifica questo timbro…", command=lambda: self.edit_placed_stamp(hit))
+                menu.add_command(label=f"Ruota a destra di {step:g}°", command=lambda: self.rotate_placed(hit, step))
+                menu.add_command(label=f"Ruota a sinistra di {step:g}°", command=lambda: self.rotate_placed(hit, -step))
+                menu.add_separator()
+                menu.add_command(label="Elimina questo timbro", command=self.delete_selected_stamp)
         else:
-            step = self.rotate_step
-            menu.add_command(label="Modifica questo timbro…", command=lambda: self.edit_placed_stamp(hit))
-            menu.add_command(label=f"Ruota a destra di {step:g}°", command=lambda: self.rotate_placed(hit, step))
-            menu.add_command(label=f"Ruota a sinistra di {step:g}°", command=lambda: self.rotate_placed(hit, -step))
+            self._fill_context_menu(menu, event)
+        if menu.index("end") is not None:
+            menu.tk_popup(event.x_root, event.y_root)
+
+    def _fill_context_menu(self, menu, event):
+        """Voci del menù contestuale su area libera, secondo lo stato del programma."""
+        if not self.doc:
+            menu.add_command(label="Apri un PDF…", command=self.cmd_open)
+            menu.add_command(label="Nuovo documento…", command=self.cmd_new)
+            return
+        if self._clip_text:
+            menu.add_command(label="Copia il testo selezionato", command=self.copy_selection)
             menu.add_separator()
-            menu.add_command(label="Elimina questo timbro", command=self.delete_selected_stamp)
-        menu.tk_popup(event.x_root, event.y_root)
+        if not self._continuous_active():
+            menu.add_command(label="Aggiungi testo qui", command=lambda: self.add_text_at(event.x, event.y))
+            menu.add_command(label="Bianchetto (copri di bianco)", command=lambda: self.set_tool("whiteout"))
+            menu.add_command(label="Oscura (copri di nero)", command=lambda: self.set_tool("blackout"))
+            if self.stamp:
+                menu.add_command(label="Attiva modalità timbro", command=self.toggle_stamp_mode)
+            menu.add_separator()
+            menu.add_command(label="Ruota la pagina a destra", command=lambda: self.rotate(90))
+            menu.add_command(label="Ruota la pagina a sinistra", command=lambda: self.rotate(-90))
+            menu.add_separator()
+        menu.add_command(label="Stampa…", command=self.cmd_print)
+        menu.add_command(label="Adatta alla larghezza", command=lambda: self.set_zoom_mode("width"))
+        menu.add_command(label="Pagina intera", command=lambda: self.set_zoom_mode("page"))
 
     # ------------------------------------------------------- timbri e caselle di testo già sulla pagina
     def _stamp_at(self, x, y):

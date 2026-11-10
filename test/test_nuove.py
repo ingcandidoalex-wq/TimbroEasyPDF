@@ -165,10 +165,10 @@ assert len(app.tabs) == 3 and texts(app.tabs[2]) == ["Relazione pagina 2"] and a
 nuovo = app.tabs[2]
 app.close_tab(nuovo)                                 # modificato: risposta "non salvare"
 assert len(app.tabs) == 2
-app.cmd_new()
-assert app.tab.doc is not None and len(app.tab.doc) == 0
-assert not app.cmd_save(), "un documento vuoto non si salva"
-app.open_file(str(OUT / "scansione.pdf"))           # il documento vuoto intatto lascia il posto
+app.cmd_new("A4")                                   # ora crea una pagina bianca A4
+assert app.tab.doc is not None and len(app.tab.doc) == 1
+assert abs(app.tab.doc[0].rect.width - 595) < 2 and abs(app.tab.doc[0].rect.height - 842) < 2, "formato A4"
+app.open_file(str(OUT / "scansione.pdf"))           # la pagina bianca intatta lascia il posto
 assert names() == ["relazione.pdf", "tavola.pdf", "scansione.pdf"], names()
 print("nuovo documento dal Â«+Â», chiusura scheda, documento vuoto: ok")
 

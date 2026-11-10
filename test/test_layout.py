@@ -40,6 +40,8 @@ tp.set_dpi_awareness()
 def new_app(geometry="1400x940+20+20"):
     root = tk.Tk()
     app = tp.App(root)
+    for _k in ("text", "pages", "stamps"):   # i test della disposizione vogliono tutto a vista
+        app._set_visible(_k, True)
     if geometry:
         root.geometry(geometry)
     root.attributes("-topmost", True)
@@ -290,7 +292,11 @@ assert root.geometry() == "1300x880+60+40", root.geometry()
 print("riapertura: barre, pannelli, larghezze e finestra come prima: ok")
 app.reset_layout()
 pump(0.3)
-assert app.layout == tp.default_layout() and app.bars["text"].side == "top"
+assert app.layout == tp.default_layout()
+for key in ("text", "pages", "stamps"):   # il ripristino li richiude: li riapro per controllare la disposizione
+    app._set_visible(key, True)
+pump(0.3)
+assert app.bars["text"].side == "top"
 panes = [str(p) for p in app.paned.panes()]
 assert panes[0] == str(app.side_panels["thumbs"]) and panes[-1] == str(app.side_panels["stamps"])
 print("ripristino della disposizione iniziale: ok")
