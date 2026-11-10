@@ -29,11 +29,19 @@ from tkinter import font as tkfont
 
 import pymupdf
 
+IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
 APP_VERSION = "2.4"
-CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
+if IS_WIN:
+    CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
+elif IS_MAC:
+    CONFIG_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
+else:
+    CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
 OLD_STAMP_FILE = CONFIG_DIR / "timbro.png"   # timbro unico della prima versione
@@ -240,6 +248,20 @@ def set_dpi_awareness():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
+
+
+def open_path(target, verb=None):
+    """Apre un file, una cartella o un URL con l'applicazione predefinita del sistema (multipiattaforma)."""
+    target = str(target)
+    if IS_WIN:
+        if verb:
+            os.startfile(target, verb)    # es. "edit" per modificare un'immagine
+        else:
+            os.startfile(target)
+    elif IS_MAC:
+        subprocess.run(["open", target], check=False)
+    else:
+        subprocess.run(["xdg-open", target], check=False)
 
 
 def extract_win_icon(path, index, size):
@@ -493,8 +515,24 @@ PAD_WIDTH_MM = 120        # larghezza "reale" del riquadro in cui si disegna la 
 
 
 def installed_fonts():
-    """Font installati in Windows (di sistema e dell'utente): nome -> file."""
+    """Font installati: nome -> file. Dal registro su Windows, dalle cartelle dei font su Mac/Linux."""
     fonts = {}
+    if not IS_WIN:
+        if IS_MAC:
+            dirs = [Path("/System/Library/Fonts"), Path("/Library/Fonts"), Path.home() / "Library" / "Fonts"]
+        else:
+            dirs = [Path("/usr/share/fonts"), Path("/usr/local/share/fonts"),
+                    Path.home() / ".fonts", Path.home() / ".local" / "share" / "fonts"]
+        for folder in dirs:
+            try:
+                if not folder.exists():
+                    continue
+                for file in folder.rglob("*"):
+                    if file.suffix.lower() in (".ttf", ".otf", ".ttc") and file.is_file():
+                        fonts.setdefault(file.stem, str(file))
+            except OSError:
+                continue
+        return fonts
     try:
         import winreg
     except ImportError:
@@ -1334,9 +1372,9 @@ class StampEditor:
             join_alpha(self.colors, self.mask).save(str(path))
             mtime = path.stat().st_mtime
             try:
-                os.startfile(str(path), "edit")
+                open_path(path, "edit")
             except OSError:
-                os.startfile(str(path))
+                open_path(path)
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"Impossibile aprire l'editor di immagini:\n{exc}", parent=self.top)
             return
@@ -3010,7 +3048,7 @@ class FeedbackDialog:
 
     def _mail(self):
         try:
-            os.startfile(feedback_mailto(self.kind.get(), self.text.get("1.0", "end-1c")))
+            open_path(feedback_mailto(self.kind.get(), self.text.get("1.0", "end-1c")))
         except OSError:
             self._copy()
             self.note.configure(foreground="#a15c00", text="Su questo PC non c'è un programma di posta: l'indirizzo "
@@ -3226,11 +3264,15 @@ def pdf_handler_entries():
 
 
 def _notify_associations_changed():
+    if not IS_WIN:
+        return
     import ctypes
     ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)   # SHCNE_ASSOCCHANGED
 
 
 def register_pdf_handler():
+    if not IS_WIN:
+        return
     import winreg
     for old_name in OLD_APP_NAMES:   # le voci del vecchio nome punterebbero al vecchio programma
         unregister_pdf_handler(old_name, notify=False)
@@ -3241,6 +3283,8 @@ def register_pdf_handler():
 
 
 def unregister_pdf_handler(app_name=APP_NAME, notify=True):
+    if not IS_WIN:
+        return
     import winreg
     prog_id = f"{app_name}.Documento"
 
@@ -3272,6 +3316,8 @@ def unregister_pdf_handler(app_name=APP_NAME, notify=True):
 
 
 def is_default_pdf_handler():
+    if not IS_WIN:
+        return False
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer"
@@ -3467,6 +3513,8 @@ def write_archive(path, items, images, password=None):
 
 def _dpapi(data, protect):
     """Cifra/decifra con la protezione dati di Windows: funziona solo per questo utente su questo PC."""
+    if not IS_WIN:
+        return data                      # fuori da Windows: nessuna cifratura di sistema (resta il base64 di protect_secret)
     import ctypes
     from ctypes import wintypes
 
@@ -4058,6 +4106,8 @@ class App:
 
     def _glyph(self, glyph, size=20):
         """Icona colorata di Windows per l'azione (se esiste), altrimenti None (solo testo)."""
+        if not IS_WIN:                    # le icone colorate si estraggono solo dalle librerie di Windows
+            return None
         action = MDL2_TO_WIN.get(glyph)
         if not action:
             return None
@@ -4083,9 +4133,11 @@ class App:
     def _build_main_bar(self):
         bar = ToolBar(self.root, "main", self._on_grip)
         g = bar.group()
-        bar_button(g, "", self.cmd_open, image=self._glyph("E8E5"), tip="Apri un PDF  (Ctrl+O)")
-        bar_button(g, "", self.cmd_new, image=self._glyph("E7C3"), tip="Nuovo documento (pagina bianca)  (Ctrl+N)")
-        bar_button(g, "", self.cmd_save, image=self._glyph("E74E"), tip="Salva con nome  (Ctrl+S)")
+        # senza icona colorata (fuori da Windows) i pulsanti mostrano il testo, così restano riconoscibili
+        _open, _new, _save = self._glyph("E8E5"), self._glyph("E7C3"), self._glyph("E74E")
+        bar_button(g, "" if _open else "Apri", self.cmd_open, image=_open, tip="Apri un PDF  (Ctrl+O)")
+        bar_button(g, "" if _new else "Nuovo", self.cmd_new, image=_new, tip="Nuovo documento (pagina bianca)  (Ctrl+N)")
+        bar_button(g, "" if _save else "Salva", self.cmd_save, image=_save, tip="Salva con nome  (Ctrl+S)")
         bar_button(bar.group(), "Aggiungi…", lambda: self.cmd_add(at_end=True))
         bar.separator()
         g = bar.group()
@@ -4750,9 +4802,10 @@ class App:
         f.add_command(label="Unisci le schede in un nuovo documento…", accelerator="Ctrl+U", command=self.cmd_merge_tabs)
         f.add_command(label="Dividi il documento in più file…", accelerator="Ctrl+D", command=self.cmd_split)
         f.add_separator()
-        f.add_command(label=f"Usa {APP_NAME} per aprire i PDF (programma predefinito)…", command=self.cmd_default_app)
-        f.add_command(label=f"Togli {APP_NAME} dai programmi per i PDF…", command=self.cmd_remove_default_app)
-        f.add_separator()
+        if IS_WIN:   # registrazione come lettore PDF predefinito: solo su Windows
+            f.add_command(label=f"Usa {APP_NAME} per aprire i PDF (programma predefinito)…", command=self.cmd_default_app)
+            f.add_command(label=f"Togli {APP_NAME} dai programmi per i PDF…", command=self.cmd_remove_default_app)
+            f.add_separator()
         f.add_command(label="Chiudi scheda", accelerator="Ctrl+W", command=self.close_tab)
         f.add_command(label="Esci", accelerator="Ctrl+Q", command=self.quit)
         m.add_cascade(label="File", menu=f)
@@ -5535,7 +5588,7 @@ class App:
         self.status(f"Creati {len(paths)} file in {folder}: da «{paths[0].name}» a «{paths[-1].name}».")
         if messagebox.askyesno(APP_NAME, f"Creati {len(paths)} file in:\n{folder}\n\nVuoi aprire la cartella?",
                                parent=self.root):
-            os.startfile(folder)
+            open_path(folder)
 
     def quit(self):
         for tab in [t for t in self.tabs if t.dirty]:
@@ -7247,8 +7300,22 @@ class App:
 
         self.root.after(10, step)
 
+    def _print_via_system(self):
+        """Fuori da Windows: salva un PDF temporaneo con le modifiche e lo apre nel visore di sistema (Cmd+P)."""
+        try:
+            name = (Path(self.path).stem if self.path else "documento") + ".pdf"
+            tmp = Path(tempfile.mkdtemp(prefix="tep-stampa")) / name
+            tmp.write_bytes(self.doc.tobytes(garbage=3, deflate=True))
+            open_path(tmp)
+            self.status("Documento aperto nell'anteprima di sistema: usa Cmd+P per stampare.")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile preparare la stampa:\n{exc}", parent=self.root)
+
     def cmd_print(self):
         if not self.doc:
+            return
+        if not IS_WIN:                    # su Mac/Linux la stampa passa dal visore di sistema (Anteprima)
+            self._print_via_system()
             return
         default, printers = list_printers()
         if not printers:
@@ -7331,7 +7398,7 @@ class App:
             self._remember_dir("word", Path(path).parent)
             self.status(f"Esportato in Word: {path}")
             if messagebox.askyesno(APP_NAME, f"Documento Word creato:\n{path}\n\nVuoi aprirlo?", parent=self.root):
-                os.startfile(path)
+                open_path(path)
 
         self.root.after(200, wait)
 
@@ -7700,7 +7767,7 @@ class App:
         action = dialog.action
         if action == "open_folder":
             lib.path.parent.mkdir(parents=True, exist_ok=True)
-            os.startfile(lib.path.parent)
+            open_path(lib.path.parent)
         elif action == "unlock":
             self._library_ready()
         elif action == "move":
@@ -7913,11 +7980,12 @@ def main():
     # già aperto? gli si passano i file (doppio clic su un PDF) e questa apertura finisce qui
     if send_to_running_instance(sys.argv[1:]):
         return
-    try:   # segnale per l'installatore: il programma è aperto, va chiuso prima di aggiornarlo
-        import ctypes
-        ctypes.windll.kernel32.CreateMutexW(None, False, APP_MUTEX)
-    except Exception:
-        pass
+    if IS_WIN:   # segnale per l'installatore (Windows): il programma è aperto, va chiuso prima di aggiornarlo
+        try:
+            import ctypes
+            ctypes.windll.kernel32.CreateMutexW(None, False, APP_MUTEX)
+        except Exception:
+            pass
     set_dpi_awareness()
     root = tk.Tk()
     App(root, sys.argv[1:])
