@@ -1,12 +1,12 @@
 name: Compila app Mac
 
 # Compila TimbroEasyPDF come app .app per Mac (Apple Silicon) sui runner macOS di GitHub.
-# Si avvia a mano (Actions ▸ "Compila app Mac" ▸ Run workflow) o a ogni push sul ramo "mac".
+# Avvio manuale (Actions ▸ "Compila app Mac" ▸ Run workflow). Richiede un metodo di
+# pagamento registrato sull'account GitHub per sbloccare i runner macOS (uso gratuito
+# sui repository pubblici). In alternativa si usa lo script build_mac.command su un Mac.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [mac]
 
 jobs:
   build:
