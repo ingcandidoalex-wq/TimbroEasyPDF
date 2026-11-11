@@ -32,7 +32,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -89,8 +89,16 @@ TOOL_HINTS = {
 
 PDF_TYPES = [("PDF", "*.pdf"), ("Tutti i file", "*.*")]
 DOCX_TYPES = [("Documento Word", "*.docx")]
-ADD_TYPES = [("PDF e immagini", "*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp"), ("Tutti i file", "*.*")]
 IMAGE_TYPES = [("Immagini", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif"), ("Tutti i file", "*.*")]
+# documenti Office convertibili in PDF (con Word/Excel installati, oppure con LibreOffice)
+WORD_EXTS = {".docx", ".doc", ".docm", ".dot", ".rtf", ".odt"}
+EXCEL_EXTS = {".xlsx", ".xls", ".xlsm", ".csv", ".ods"}
+OFFICE_EXTS = WORD_EXTS | EXCEL_EXTS
+OFFICE_PATTERN = "*.docx *.doc *.docm *.rtf *.odt *.xlsx *.xls *.xlsm *.csv *.ods"
+OFFICE_TYPES = [("Word ed Excel", OFFICE_PATTERN), ("Tutti i file", "*.*")]
+OPEN_TYPES = [("PDF, Word, Excel", "*.pdf " + OFFICE_PATTERN), ("PDF", "*.pdf"), ("Tutti i file", "*.*")]
+ADD_TYPES = [("PDF, immagini, Word, Excel", "*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp " + OFFICE_PATTERN),
+             ("Tutti i file", "*.*")]
 
 HELP_TEXT = """\
 TIMBRO
@@ -191,6 +199,10 @@ SCHEDE E PAGINE
 • Ruota, sposta ed elimina agiscono sulle pagine selezionate.
 • «Aggiungi…» unisce altri PDF o immagini in fondo al documento
   (dal menu File anche dopo la pagina corrente).
+• «Apri Word o Excel (converti in PDF)» (menu File) apre un documento Word o un
+  foglio Excel convertendolo in PDF, pronto da timbrare. Serve Word/Excel
+  installato sul PC, oppure LibreOffice. Puoi anche trascinare il file sulla
+  finestra o sceglierlo da «Apri…».
 
 TESTO
 • Modifica testo: clicca una riga per correggerla. Il vecchio testo viene
@@ -2005,6 +2017,153 @@ def pdf_to_docx(pdf, docx, timeout=900):
     if res.returncode != 0 or not Path(docx).exists():
         return (res.stderr or res.stdout or "errore sconosciuto").strip()
     return None
+
+
+# ---------------------------------------------------------------- Word/Excel -> PDF
+WORD_TO_PDF_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$word = New-Object -ComObject Word.Application
+try {
+    $word.Visible = $false
+    $word.DisplayAlerts = 0
+    $in = $env:TIMBRO_IN; $confirm = $false; $readonly = $true; $recent = $false
+    $doc = $word.Documents.Open([ref]$in, [ref]$confirm, [ref]$readonly, [ref]$recent)
+    $out = $env:TIMBRO_OUT; $format = 17
+    $doc.SaveAs2([ref]$out, [ref]$format)
+    $nosave = 0
+    $doc.Close([ref]$nosave)
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+} finally {
+    if ($word.Documents.Count -eq 0) { $word.Quit() }
+    [void][Runtime.InteropServices.Marshal]::ReleaseComObject($word)
+}
+"""
+
+EXCEL_TO_PDF_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$excel = New-Object -ComObject Excel.Application
+try {
+    $excel.Visible = $false
+    $excel.DisplayAlerts = $false
+    $wb = $excel.Workbooks.Open($env:TIMBRO_IN, 0, $true)
+    $wb.ExportAsFixedFormat(0, $env:TIMBRO_OUT)
+    $wb.Close($false)
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+} finally {
+    $excel.Quit()
+    [void][Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
+}
+"""
+
+
+def excel_installed():
+    try:
+        import winreg
+        winreg.CloseKey(winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                       r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Excel.exe"))
+        return True
+    except (ImportError, OSError):
+        return False
+
+
+def libreoffice_exe():
+    """Percorso dell'eseguibile di LibreOffice (soffice), oppure None."""
+    found = shutil.which("soffice") or shutil.which("soffice.exe")
+    if found:
+        return found
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "LibreOffice" / "program" / "soffice.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "LibreOffice" / "program" / "soffice.exe",
+        Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+        Path("/usr/bin/soffice"), Path("/usr/local/bin/soffice"),
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                return str(c)
+        except OSError:
+            pass
+    return None
+
+
+def _run_office_script(script, src, pdf, timeout=300):
+    exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    env = dict(os.environ, TIMBRO_IN=str(src), TIMBRO_OUT=str(pdf))
+    try:
+        res = subprocess.run([str(exe), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                              "-Command", script], env=env, capture_output=True, text=True,
+                             encoding="oem", errors="replace", timeout=timeout,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        return "l'applicazione di Office non ha risposto in tempo."
+    except OSError as exc:
+        return str(exc)
+    if res.returncode != 0 or not Path(pdf).exists():
+        return (res.stderr or res.stdout or "errore sconosciuto").strip()
+    return None
+
+
+def libreoffice_to_pdf(src, pdf, timeout=300):
+    exe = libreoffice_exe()
+    if not exe:
+        return "LibreOffice non è installato."
+    outdir = Path(pdf).parent
+    try:
+        res = subprocess.run([exe, "--headless", "--convert-to", "pdf", "--outdir", str(outdir), str(src)],
+                             capture_output=True, text=True, errors="replace", timeout=timeout,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        return "LibreOffice non ha risposto in tempo."
+    except OSError as exc:
+        return str(exc)
+    produced = outdir / (Path(src).stem + ".pdf")
+    if produced.exists():
+        if str(produced) != str(pdf):
+            try:
+                os.replace(produced, pdf)
+            except OSError:
+                pass
+        if Path(pdf).exists():
+            return None
+    return (res.stderr or res.stdout or "conversione con LibreOffice non riuscita.").strip()
+
+
+def office_available():
+    """True se c'è almeno un motore per convertire Office in PDF (Word/Excel o LibreOffice)."""
+    return word_installed() or excel_installed() or bool(libreoffice_exe())
+
+
+def office_to_pdf(src, pdf, timeout=300):
+    """Converte un documento Word/Excel in PDF. None se riuscito, altrimenti il messaggio d'errore.
+
+    Prova prima l'applicazione di Office adatta (migliore fedeltà), poi LibreOffice come ripiego.
+    """
+    ext = Path(src).suffix.lower()
+    attempts = []
+    if ext in WORD_EXTS and word_installed():
+        attempts.append(lambda: _run_office_script(WORD_TO_PDF_SCRIPT, src, pdf, timeout))
+    if ext in EXCEL_EXTS and excel_installed():
+        attempts.append(lambda: _run_office_script(EXCEL_TO_PDF_SCRIPT, src, pdf, timeout))
+    if libreoffice_exe():
+        attempts.append(lambda: libreoffice_to_pdf(src, pdf, timeout))
+    if not attempts:
+        return ("Per convertire Word o Excel in PDF serve Microsoft Word/Excel oppure LibreOffice "
+                "installato su questo computer.")
+    error = "conversione non riuscita."
+    for attempt in attempts:
+        try:
+            if Path(pdf).exists():
+                Path(pdf).unlink()
+        except OSError:
+            pass
+        error = attempt()
+        if error is None:
+            return None
+    return error
 
 
 _TK_FAMILIES = None
@@ -4735,6 +4894,7 @@ class App:
                       command=self.cmd_open, image=self._glyph("E8E5"), **ic)
         f.add_command(label="Nuovo documento (pagina bianca, A4/A3…)…", accelerator="Ctrl+N", command=self.cmd_new,
                       image=self._glyph("E7C3"), **ic)
+        f.add_command(label="Apri Word o Excel (converti in PDF)…", command=self.cmd_open_office)
         f.add_command(label="Aggiungi PDF/immagini in fondo…", accelerator="Ctrl+I",
                       command=lambda: self.cmd_add(at_end=True), image=self._glyph("E710"), **ic)
         f.add_command(label="Inserisci PDF/immagini dopo la pagina corrente…", accelerator="Ctrl+Maiusc+I",
@@ -5328,8 +5488,20 @@ class App:
 
     # ------------------------------------------------------------ documento
     def cmd_open(self):
-        paths = filedialog.askopenfilenames(parent=self.root, title="Apri PDF (anche più di uno)",
-                                            initialdir=self._dir("open"), filetypes=PDF_TYPES)
+        paths = filedialog.askopenfilenames(parent=self.root, title="Apri (PDF, Word, Excel)",
+                                            initialdir=self._dir("open"), filetypes=OPEN_TYPES)
+        for path in paths:
+            self.open_file(path)
+        if paths:
+            self._remember_dir("open", Path(paths[0]).parent)
+
+    def cmd_open_office(self):
+        if not office_available():
+            messagebox.showinfo(APP_NAME, "Per convertire Word o Excel in PDF serve Microsoft Word/Excel "
+                                "oppure LibreOffice installato su questo computer.", parent=self.root)
+            return
+        paths = filedialog.askopenfilenames(parent=self.root, title="Apri Word o Excel (converti in PDF)",
+                                            initialdir=self._dir("open"), filetypes=OFFICE_TYPES)
         for path in paths:
             self.open_file(path)
         if paths:
@@ -5352,8 +5524,48 @@ class App:
         self.status(f"Nuovo documento {fmt}{' orizzontale' if landscape else ''} con una pagina bianca: apponi "
                     "un timbro o del testo, oppure aggiungi altre pagine con «Aggiungi…».")
 
+    def _office_to_temp_pdf(self, path):
+        """Converte un Word/Excel in un PDF temporaneo, con avanzamento. Percorso del PDF o None."""
+        tmp_dir = Path(tempfile.mkdtemp(prefix="tep-office"))
+        pdf = tmp_dir / (Path(path).stem + ".pdf")
+        result = {}
+        worker = threading.Thread(target=lambda: result.update(error=office_to_pdf(path, pdf)), daemon=True)
+        progress = ProgressWindow(self.root, "Conversione in PDF", can_cancel=False)
+        progress.update(0, f"Converto «{Path(path).name}» in PDF…")
+        worker.start()
+        while worker.is_alive():
+            self.root.update()
+            time.sleep(0.03)
+        progress.close()
+        error = result.get("error")
+        if error:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            messagebox.showerror(APP_NAME, f"Conversione di «{Path(path).name}» non riuscita:\n\n{error}",
+                                 parent=self.root)
+            return None
+        return str(pdf)
+
+    def _open_converted(self, path):
+        """Converte un Word/Excel in PDF e lo apre come nuova scheda (PDF non ancora salvato)."""
+        tmp = self._office_to_temp_pdf(path)
+        if tmp is None:
+            return False
+        try:
+            doc = load_as_pdf(tmp, self.root)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile aprire il PDF convertito:\n\n{exc}", parent=self.root)
+            return False
+        if doc is None:
+            return False
+        self._add_tab(DocTab(doc, label=Path(path).stem))
+        self.cfg["last_dir"] = str(Path(path).parent)
+        self.status(f"«{Path(path).name}» convertito in PDF: salvalo con «Salva con nome…».")
+        return True
+
     def open_file(self, path):
         """Apre il PDF in una nuova scheda (se è già aperto, passa alla sua scheda)."""
+        if Path(path).suffix.lower() in OFFICE_EXTS:
+            return self._open_converted(path)
         key = os.path.normcase(os.path.abspath(path))
         for tab in self.tabs:
             if tab.path and os.path.normcase(os.path.abspath(tab.path)) == key:
@@ -5385,7 +5597,11 @@ class App:
         sources = []
         for p in paths:
             try:
-                src = load_as_pdf(p, self.root)
+                if Path(p).suffix.lower() in OFFICE_EXTS:
+                    tmp = self._office_to_temp_pdf(p)
+                    src = load_as_pdf(tmp, self.root) if tmp else None
+                else:
+                    src = load_as_pdf(p, self.root)
             except Exception as exc:
                 messagebox.showerror(APP_NAME, f"Impossibile aprire «{Path(p).name}»:\n{exc}", parent=self.root)
                 continue
@@ -7898,15 +8114,15 @@ class App:
 
     def _on_files_dropped(self, files):
         """File trascinati da Esplora risorse sulla finestra: i PDF e le immagini si aprono in nuove schede."""
-        accepted = (".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
+        accepted = (".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp") + tuple(OFFICE_EXTS)
         others = [Path(f).name for f in files if Path(f).suffix.lower() not in accepted]
         for f in files:
             if Path(f).suffix.lower() in accepted:
                 self.open_file(f)
         self.root.lift()
         if others:
-            messagebox.showinfo(APP_NAME, "Questi file non sono PDF né immagini e non sono stati aperti:\n"
-                                + "\n".join(others), parent=self.root)
+            messagebox.showinfo(APP_NAME, "Questi file non sono PDF, immagini o documenti Word/Excel "
+                                "e non sono stati aperti:\n" + "\n".join(others), parent=self.root)
 
 
 def main():

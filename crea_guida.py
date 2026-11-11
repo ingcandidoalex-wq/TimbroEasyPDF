@@ -421,7 +421,10 @@ invisibile. Da quel momento si può cercare, copiare, correggere ed esportare in
 ▲ ▼ passano al precedente e al successivo.</p>
 <p><b>Esporta in Word…</b> crea un documento Word usando Microsoft Word installato sul PC.
 <b>File › Stampa…</b> (Ctrl+P) manda il documento alla stampante: scegli stampante, quali pagine
-(tutte, la corrente o un intervallo) e il numero di copie.</p>"""),
+(tutte, la corrente o un intervallo) e il numero di copie.</p>
+<p><b>File › Apri Word o Excel (converti in PDF)…</b> apre un documento Word o un foglio Excel
+convertendolo in PDF, pronto da timbrare (serve Word o Excel installato sul PC, oppure LibreOffice).
+Puoi anche trascinare il file Word/Excel sulla finestra.</p>"""),
     ("Sistemare barre e pannelli", "disposizione", 100, """
 <p>Gli interruttori <b>Testo</b>, <b>Pagine</b>, <b>Timbri</b> in alto a destra (e le stesse voci nel menu
 <b>Visualizza</b>) mostrano e nascondono i gruppi di strumenti e il pannello dei timbri. Trascina la
