@@ -10,6 +10,7 @@ Dipendenze:  pip install pymupdf   (l'OCR usa i file della cartella tessdata,
 """
 
 import array
+import base64
 import json
 import math
 import os
@@ -32,7 +33,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.5"
+APP_VERSION = "2.6"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -53,6 +54,7 @@ GALLERY_H = 2 * (TILE_H + 26) + 6
 MAX_STAMP_PX = 1600            # lato massimo dell'immagine del timbro salvata
 MAX_RENDER_PX = 40_000_000     # limite di pixel per il rendering della pagina
 SYS32 = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32"
+MDL2_FONT = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "segmdl2.ttf"   # icone a glifo di Windows
 # icone colorate di Windows, estratte dalle librerie di sistema: azione -> (libreria, indice)
 WIN_ICONS = {
     "open": ("imageres.dll", 4),     # Apri (cartella aperta)
@@ -89,15 +91,23 @@ TOOL_HINTS = {
 
 PDF_TYPES = [("PDF", "*.pdf"), ("Tutti i file", "*.*")]
 DOCX_TYPES = [("Documento Word", "*.docx")]
-IMAGE_TYPES = [("Immagini", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif"), ("Tutti i file", "*.*")]
+IMG_PATTERN = "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif"
+IMAGE_TYPES = [("Immagini", IMG_PATTERN), ("Tutti i file", "*.*")]
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif"}
 # documenti Office convertibili in PDF (con Word/Excel installati, oppure con LibreOffice)
 WORD_EXTS = {".docx", ".doc", ".docm", ".dot", ".rtf", ".odt"}
 EXCEL_EXTS = {".xlsx", ".xls", ".xlsm", ".csv", ".ods"}
 OFFICE_EXTS = WORD_EXTS | EXCEL_EXTS
 OFFICE_PATTERN = "*.docx *.doc *.docm *.rtf *.odt *.xlsx *.xls *.xlsm *.csv *.ods"
 OFFICE_TYPES = [("Word ed Excel", OFFICE_PATTERN), ("Tutti i file", "*.*")]
-OPEN_TYPES = [("PDF, Word, Excel", "*.pdf " + OFFICE_PATTERN), ("PDF", "*.pdf"), ("Tutti i file", "*.*")]
-ADD_TYPES = [("PDF, immagini, Word, Excel", "*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp " + OFFICE_PATTERN),
+# file firmati digitalmente (CAdES): dentro c'è il documento vero
+P7M_EXTS = {".p7m"}
+P7M_PATTERN = "*.p7m"
+# tutto ciò che sappiamo trasformare in PDF, oltre ai PDF stessi (per apertura e conversione in blocco)
+CONVERTIBLE_EXTS = OFFICE_EXTS | IMAGE_EXTS | P7M_EXTS
+OPEN_TYPES = [("PDF, Word, Excel, firme .p7m", "*.pdf " + OFFICE_PATTERN + " " + P7M_PATTERN),
+              ("PDF", "*.pdf"), ("File firmati (.p7m)", P7M_PATTERN), ("Tutti i file", "*.*")]
+ADD_TYPES = [("PDF, immagini, Word, Excel, .p7m", "*.pdf " + IMG_PATTERN + " " + OFFICE_PATTERN + " " + P7M_PATTERN),
              ("Tutti i file", "*.*")]
 
 HELP_TEXT = """\
@@ -203,6 +213,12 @@ SCHEDE E PAGINE
   foglio Excel convertendolo in PDF, pronto da timbrare. Serve Word/Excel
   installato sul PC, oppure LibreOffice. Puoi anche trascinare il file sulla
   finestra o sceglierlo da «Apri…».
+• «Apri un file firmato .p7m» (menu File) estrae il documento contenuto nella
+  firma digitale (CAdES) e lo apre come PDF (se dentro c'è un Word/Excel o
+  un'immagine lo converte). Vale anche trascinando il .p7m sulla finestra.
+• «Converti una cartella in PDF» (menu File) trasforma in PDF, in un colpo solo,
+  tutti i Word/Excel, le immagini e i file .p7m di una cartella, salvando i PDF
+  nella stessa cartella senza sovrascrivere i file già presenti.
 
 TESTO
 • Modifica testo: clicca una riga per correggerla. Il vecchio testo viene
@@ -2700,6 +2716,27 @@ def arrow_icon(clockwise, size=20):
     return page.get_pixmap(alpha=True)
 
 
+_mdl2_font = None
+
+def glyph_icon(code, size=20, color=(0.20, 0.20, 0.22)):
+    """Rende un glifo del font Segoe MDL2 Assets (icone di Windows: dischetto, più…) come Pixmap RGBA, o None."""
+    global _mdl2_font
+    if not MDL2_FONT.exists():
+        return None
+    try:
+        if _mdl2_font is None:
+            _mdl2_font = pymupdf.Font(fontfile=str(MDL2_FONT))
+        doc = pymupdf.open()
+        page = doc.new_page(width=size, height=size)
+        ch = chr(code)
+        fs = size * 0.86
+        x = (size - _mdl2_font.text_length(ch, fontsize=fs)) / 2
+        page.insert_text((x, size * 0.80), ch, fontfile=str(MDL2_FONT), fontname="mdl2", fontsize=fs, color=color)
+        return page.get_pixmap(alpha=True)
+    except Exception:
+        return None
+
+
 def bar_button(group, text, command, width=None, image=None, tip=None):
     kw = {}
     if image:
@@ -2758,6 +2795,17 @@ class ToolBar(ttk.Frame):
         if right:
             self._right = g
         return g
+
+    def labeled_group(self, title, right=False):
+        """Gruppo in stile barra di Word: i pulsanti sopra, il nome del gruppo sotto."""
+        outer = ttk.Frame(self)
+        buttons = ttk.Frame(outer)
+        buttons.pack(side=tk.TOP)
+        ttk.Label(outer, text=title, style="GroupTitle.TLabel", anchor="center").pack(side=tk.TOP, fill=tk.X)
+        self.items.append(outer)
+        if right:
+            self._right = outer
+        return buttons
 
     def separator(self):
         self.items.append(None)
@@ -3561,6 +3609,116 @@ def load_as_pdf(path, parent):
     return doc
 
 
+# ---------------------------------------------------------------- file firmati .p7m (firma digitale CAdES)
+def sniff_ext(data):
+    """Indovina l'estensione dal contenuto (i primi byte), per i .p7m il cui nome non ce l'ha. '' se ignoto."""
+    if data[:5] == b"%PDF-" or data[:4] == b"%PDF":
+        return ".pdf"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:2] in (b"II", b"MM"):
+        return ".tif"
+    if data[:2] == b"BM":
+        return ".bmp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if data[:4] == b"PK\x03\x04":
+        return ".zip"          # docx/xlsx/odt: si distinguono dal nome, non dai primi byte
+    if data[:5] == b"{\\rtf":
+        return ".rtf"
+    return ""
+
+
+def _p7m_payload(der):
+    """Estrae l'eContent (il documento firmato) da un involucro PKCS#7/CMS SignedData. Byte o None."""
+    from asn1crypto import cms
+    info = cms.ContentInfo.load(der)
+    if info["content_type"].native != "signed_data":
+        return None
+    content = info["content"]["encap_content_info"]["content"]
+    return None if content is None else content.native
+
+
+def extract_p7m(path):
+    """Restituisce i byte del documento contenuto in un file .p7m (firma digitale). ValueError se non riesce."""
+    raw = Path(path).read_bytes()
+    payload = None
+    try:                                   # 1) DER binario (il caso normale)
+        payload = _p7m_payload(raw)
+    except Exception:
+        payload = None
+    if not payload:                        # 2) a volte il .p7m è in base64 (anche con intestazioni PEM)
+        try:
+            text = re.sub(r"-----[^-]*-----", "", raw.decode("ascii", "ignore"))
+            payload = _p7m_payload(base64.b64decode("".join(text.split()), validate=False))
+        except Exception:
+            payload = None
+    if not payload:
+        raise ValueError("Il file .p7m non contiene un documento riconoscibile "
+                         "(potrebbe essere una firma «staccata», senza il documento dentro).")
+    return payload
+
+
+def inner_name_for(path, data):
+    """Nome del documento dentro un .p7m: il nome senza «.p7m» (es. relazione.pdf.p7m -> relazione.pdf)."""
+    name = Path(path).name
+    if name.lower().endswith(".p7m"):
+        name = name[:-4]
+    if not Path(name).suffix:              # il nome non dice il tipo: lo si indovina dai byte
+        name += sniff_ext(data) or ".bin"
+    return name
+
+
+def convert_file_to_pdf(src, out, timeout=300):
+    """Crea un PDF in `out` da src (PDF, immagine, Word/Excel o .p7m). None se riuscito, altrimenti il messaggio d'errore."""
+    ext = Path(src).suffix.lower()
+    try:
+        if ext in P7M_EXTS:
+            data = extract_p7m(src)                     # può sollevare ValueError
+            tmp_dir = Path(tempfile.mkdtemp(prefix="tep-p7m"))
+            inner = tmp_dir / inner_name_for(src, data)
+            try:
+                inner.write_bytes(data)
+                return convert_file_to_pdf(str(inner), out, timeout)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        if ext in OFFICE_EXTS:
+            return office_to_pdf(src, out, timeout)
+        if ext == ".pdf":
+            doc = pymupdf.open(src)
+            try:
+                if doc.needs_pass:
+                    return "Il PDF è protetto da password."
+                doc.save(str(out), garbage=3, deflate=True)
+            finally:
+                doc.close()
+            return None
+        if ext in IMAGE_EXTS:
+            img = pymupdf.open(src)
+            try:
+                Path(out).write_bytes(img.convert_to_pdf())
+            finally:
+                img.close()
+            return None
+        return "Tipo di file non adatto alla conversione in PDF."
+    except Exception as exc:
+        return str(exc)
+
+
+def batch_output_path(src, folder):
+    """Percorso del PDF di destinazione nella cartella: stesso nome base, senza sovrascrivere file esistenti."""
+    src = Path(src)
+    stem = Path(src.name[:-4]).stem if src.suffix.lower() in P7M_EXTS else src.stem   # relazione.pdf.p7m -> relazione
+    out = Path(folder) / (stem + ".pdf")
+    n = 2
+    while out.exists():
+        out = Path(folder) / f"{stem} ({n}).pdf"
+        n += 1
+    return out
+
+
 class Config:
     def __init__(self):
         self.data = {"last_dir": str(Path.home()), "stamps": [], "current_stamp": None}
@@ -4185,6 +4343,7 @@ class App:
         theme = saved_theme if saved_theme in style.theme_names() else (
             "vista" if "vista" in style.theme_names() else style.theme_use())
         style.theme_use(theme)
+        self._configure_group_style()
         bg = style.lookup("TFrame", "background") or root.cget("bg")
 
         self._build_menu()
@@ -4239,55 +4398,76 @@ class App:
             self._icons[key] = photo_from_pixmap(arrow_icon(clockwise))
         return self._icons[key]
 
+    def _mdl2(self, code, size=20, color=(0.20, 0.20, 0.22)):
+        """Icona a glifo di Windows (Segoe MDL2) per i pulsanti/menu; None se il font manca (fuori Windows)."""
+        key = ("mdl2", code, size)
+        if key not in self._icons:
+            pix = glyph_icon(code, size, color)
+            self._icons[key] = photo_from_pixmap(pix) if pix else None
+        return self._icons[key]
+
+    def _configure_group_style(self):
+        """Stile del nome sotto ogni gruppo della barra (stile barra di Word)."""
+        self._style.configure("GroupTitle.TLabel", foreground="#8a8a8a", font=("Segoe UI", 7))
+
     def _build_main_bar(self):
         bar = ToolBar(self.root, "main", self._on_grip)
-        g = bar.group()
+
+        g = bar.labeled_group("File")
         bar_button(g, "", self.cmd_open, image=self._glyph("E8E5"), tip="Apri un PDF  (Ctrl+O)")
         bar_button(g, "", self.cmd_new, image=self._glyph("E7C3"), tip="Nuovo documento (pagina bianca)  (Ctrl+N)")
-        bar_button(g, "", self.cmd_save, image=self._glyph("E74E"), tip="Salva con nome  (Ctrl+S)")
-        bar_button(bar.group(), "Aggiungi…", lambda: self.cmd_add(at_end=True))
+        save_i, saveas_i, add_i = self._mdl2(0xE74E), self._mdl2(0xE792), self._mdl2(0xE710)
+        bar_button(g, "" if save_i else "Salva", self.cmd_save_now, image=save_i, tip="Salva  (Ctrl+S)")
+        bar_button(g, "" if saveas_i else "Salva con nome…", self.cmd_save, image=saveas_i,
+                   tip="Salva con nome  (Ctrl+Maiusc+S)")
+        bar_button(g, "" if add_i else "Aggiungi…", lambda: self.cmd_add(at_end=True), image=add_i,
+                   tip="Aggiungi file in fondo (PDF, immagini, Word, Excel)…  (Ctrl+I)")
         bar.separator()
-        g = bar.group()
+
+        g = bar.labeled_group("Modifica")
         bar_button(g, "", self.undo, image=self._arrow(False), tip="Annulla  (Ctrl+Z)")
         bar_button(g, "", self.redo, image=self._arrow(True), tip="Ripristina  (Ctrl+Y)")
         bar.separator()
-        g = bar.group()
-        bar_button(g, "◀", self.prev_page, width=3)
+
+        g = bar.labeled_group("Pagine")
+        bar_button(g, "◀", self.prev_page, width=3, tip="Pagina precedente")
         self.page_var = tk.StringVar()
-        entry = ttk.Entry(g, textvariable=self.page_var, width=5, justify="center")
+        entry = ttk.Entry(g, textvariable=self.page_var, width=4, justify="center")
         entry.pack(side=tk.LEFT, padx=2)
         entry.bind("<Return>", self._goto_entry)
-        self.page_count_lbl = ttk.Label(g, text="/ 0", width=6)
+        self.page_count_lbl = ttk.Label(g, text="/ 0", width=5)
         self.page_count_lbl.pack(side=tk.LEFT)
-        bar_button(g, "▶", self.next_page, width=3)
+        bar_button(g, "▶", self.next_page, width=3, tip="Pagina successiva")
+        bar_button(g, "↺", lambda: self.rotate(-90), width=3, tip="Ruota a sinistra  (Ctrl+Maiusc+R)")
+        bar_button(g, "↻", lambda: self.rotate(90), width=3, tip="Ruota a destra  (Ctrl+R)")
+        bar_button(g, "▲", lambda: self.move_pages(-1), width=3, tip="Sposta su le pagine selezionate")
+        bar_button(g, "▼", lambda: self.move_pages(1), width=3, tip="Sposta giù le pagine selezionate")
+        bar_button(g, "", self.delete_pages, image=self._glyph("E74D"), tip="Elimina le pagine selezionate")
         bar.separator()
-        g = bar.group()
-        bar_button(g, "−", lambda: self._zoom_at(1 / 1.25), width=3)
+
+        g = bar.labeled_group("Zoom")
+        bar_button(g, "−", lambda: self._zoom_at(1 / 1.25), width=3, tip="Riduci")
         self.zoom_lbl = ttk.Label(g, text="100%", width=6, anchor="center")
         self.zoom_lbl.pack(side=tk.LEFT)
-        bar_button(g, "+", lambda: self._zoom_at(1.25), width=3)
-        bar_button(bar.group(), "Larghezza", lambda: self.set_zoom_mode("width"))
-        bar_button(bar.group(), "Pagina intera", lambda: self.set_zoom_mode("page"))
+        bar_button(g, "+", lambda: self._zoom_at(1.25), width=3, tip="Ingrandisci")
+        bar_button(g, "Larghezza", lambda: self.set_zoom_mode("width"))
+        bar_button(g, "Pagina intera", lambda: self.set_zoom_mode("page"))
         bar.separator()
-        for text, glyph, cmd in (("↺ Ruota sx", "", lambda: self.rotate(-90)),
-                                 ("↻ Ruota dx", "", lambda: self.rotate(90)),
-                                 ("▲ Su", "", lambda: self.move_pages(-1)), ("▼ Giù", "", lambda: self.move_pages(1)),
-                                 ("Elimina", "E74D", self.delete_pages)):
-            bar_button(bar.group(), text, cmd, image=self._glyph(glyph))
-        bar.separator()
-        g = bar.group()
-        ttk.Label(g, text="Cerca:").pack(side=tk.LEFT, padx=(0, 4))
+
+        g = bar.labeled_group("Cerca")
         self.find_var = tk.StringVar()
-        self.find_entry = ttk.Entry(g, textvariable=self.find_var, width=18)
+        self.find_entry = ttk.Entry(g, textvariable=self.find_var, width=16)
         self.find_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.find_entry.bind("<Return>", lambda e: self.find(1) or "break")
         self.find_entry.bind("<Shift-Return>", lambda e: self.find(-1) or "break")
         self.find_entry.bind("<Escape>", lambda e: self.clear_find() or "break")
-        bar_button(g, "▲", lambda: self.find(-1), width=3)
-        bar_button(g, "▼", lambda: self.find(1), width=3)
+        bar_button(g, "▲", lambda: self.find(-1), width=3, tip="Risultato precedente")
+        bar_button(g, "▼", lambda: self.find(1), width=3, tip="Risultato successivo")
         self.find_lbl = ttk.Label(g, foreground="#555", width=8)
         self.find_lbl.pack(side=tk.LEFT, padx=4)
-        tg = bar.group(right=True)   # gestione testo / pagine / timbri: sempre a destra (anche a capo)
+        bar.separator()
+
+        tg = bar.labeled_group("Mostra")   # interruttori delle barre: accanto a Cerca, come gli altri gruppi
         for key, label, tip in (("text", "Testo", "Mostra/nascondi gli strumenti di testo"),
                                 ("pages", "Pagine", "Mostra/nascondi unisci, dividi e vista d'insieme"),
                                 ("stamps", "Timbri", "Mostra/nascondi il pannello dei timbri")):
@@ -4633,6 +4813,7 @@ class App:
             self._style.theme_use(name)
         except tk.TclError:
             return
+        self._configure_group_style()   # lo stile dei titoli di gruppo va riapplicato dopo il cambio tema
         self.cfg["theme"] = name
 
     def reset_layout(self):
@@ -4895,13 +5076,18 @@ class App:
         f.add_command(label="Nuovo documento (pagina bianca, A4/A3…)…", accelerator="Ctrl+N", command=self.cmd_new,
                       image=self._glyph("E7C3"), **ic)
         f.add_command(label="Apri Word o Excel (converti in PDF)…", command=self.cmd_open_office)
+        f.add_command(label="Apri un file firmato .p7m (estrai il documento)…", command=self.cmd_open_p7m)
+        f.add_command(label="Converti una cartella in PDF (Word/Excel, immagini, .p7m)…",
+                      command=self.cmd_convert_folder)
         f.add_command(label="Aggiungi PDF/immagini in fondo…", accelerator="Ctrl+I",
-                      command=lambda: self.cmd_add(at_end=True), image=self._glyph("E710"), **ic)
+                      command=lambda: self.cmd_add(at_end=True), image=self._mdl2(0xE710), **ic)
         f.add_command(label="Inserisci PDF/immagini dopo la pagina corrente…", accelerator="Ctrl+Maiusc+I",
                       command=lambda: self.cmd_add(at_end=False))
         f.add_separator()
-        f.add_command(label="Salva con nome…", accelerator="Ctrl+S", command=self.cmd_save,
-                      image=self._glyph("E74E"), **ic)
+        f.add_command(label="Salva", accelerator="Ctrl+S", command=self.cmd_save_now,
+                      image=self._mdl2(0xE74E), **ic)
+        f.add_command(label="Salva con nome…", accelerator="Ctrl+Maiusc+S", command=self.cmd_save,
+                      image=self._mdl2(0xE792), **ic)
         f.add_command(label="Estrai pagine selezionate…", accelerator="Ctrl+E", command=self.cmd_extract)
         f.add_command(label="Esporta in Word…", accelerator="Ctrl+Maiusc+W", command=self.cmd_export_word)
         f.add_command(label="Stampa…", accelerator="Ctrl+P", command=self.cmd_print,
@@ -5070,7 +5256,7 @@ class App:
         ctrl("p", self.cmd_print, self.repeat_last_stamp)
         ctrl("q", self.quit)
         ctrl("r", lambda: self.rotate(90), lambda: self.rotate(-90))
-        ctrl("s", self.cmd_save)
+        ctrl("s", self.cmd_save_now, self.cmd_save)
         ctrl("t", lambda: self.set_tool("add_text"), self.toggle_stamp_mode)
         ctrl("u", self.cmd_merge_tabs)
         ctrl("w", self.close_tab, self.cmd_export_word)
@@ -5183,6 +5369,7 @@ class App:
     def _on_tab_menu(self, event, tab):
         self.switch_tab(tab)
         menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(label="Salva", command=self.cmd_save_now)
         menu.add_command(label="Salva con nome…", command=self.cmd_save)
         menu.add_command(label="Unisci tutte le schede in un nuovo documento", command=self.cmd_merge_tabs)
         menu.add_command(label="Dividi in più file…", command=self.cmd_split)
@@ -5474,7 +5661,7 @@ class App:
             self.switch_tab(tab)
             answer = messagebox.askyesnocancel(APP_NAME, f"«{tab.name}» ha modifiche non salvate.\n"
                                                "Vuoi salvarle prima di chiuderlo?", parent=self.root)
-            if answer is None or (answer and not self.cmd_save()):
+            if answer is None or (answer and not self.cmd_save_now()):
                 return False
         index = self.tabs.index(tab)
         self.tabs.remove(tab)
@@ -5506,6 +5693,80 @@ class App:
             self.open_file(path)
         if paths:
             self._remember_dir("open", Path(paths[0]).parent)
+
+    def cmd_open_p7m(self):
+        paths = filedialog.askopenfilenames(parent=self.root, title="Apri un file firmato .p7m",
+                                            initialdir=self._dir("open"),
+                                            filetypes=[("File firmati (.p7m)", P7M_PATTERN), ("Tutti i file", "*.*")])
+        for path in paths:
+            self.open_file(path)
+        if paths:
+            self._remember_dir("open", Path(paths[0]).parent)
+
+    def cmd_convert_folder(self):
+        """Converte in PDF tutti i Word/Excel, le immagini e i file firmati .p7m di una cartella, salvandoli lì."""
+        folder = filedialog.askdirectory(parent=self.root, mustexist=True,
+                                          title="Scegli la cartella con i file da convertire in PDF",
+                                          initialdir=self._dir("open"))
+        if not folder:
+            return
+        folder = Path(folder)
+        files = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in CONVERTIBLE_EXTS),
+                       key=lambda p: p.name.lower())
+        if not files:
+            messagebox.showinfo(APP_NAME, "In questa cartella non ci sono documenti Word/Excel, immagini o file "
+                                "firmati .p7m da convertire in PDF.", parent=self.root)
+            return
+        office_here = any(p.suffix.lower() in OFFICE_EXTS for p in files)
+        if office_here and not office_available():
+            if not messagebox.askyesno(APP_NAME, "Per convertire i Word/Excel servirebbe Microsoft Office o "
+                                       "LibreOffice, che qui non risulta installato: quei file verranno saltati.\n\n"
+                                       "Procedo lo stesso con le immagini e i file .p7m?", parent=self.root):
+                return
+        elif not messagebox.askyesno(APP_NAME, f"Converto in PDF {len(files)} file della cartella:\n«{folder}».\n\n"
+                                     "I PDF vengono salvati nella stessa cartella (senza sovrascrivere i file già "
+                                     "presenti). Procedo?", parent=self.root):
+            return
+        self._remember_dir("open", folder)
+        state = {"i": 0, "name": "", "done": [], "failed": []}
+        progress = ProgressWindow(self.root, "Conversione della cartella in PDF", maximum=len(files))
+
+        def work():
+            for i, src in enumerate(files):
+                if progress.cancelled:
+                    break
+                state["i"], state["name"] = i, src.name
+                err = convert_file_to_pdf(str(src), str(batch_output_path(src, folder)))
+                (state["failed"] if err else state["done"]).append((src.name, err) if err else src.name)
+            state["i"] = len(files)
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        while worker.is_alive():
+            done_n = len(state["done"]) + len(state["failed"])
+            progress.update(done_n, f"Converto «{state['name']}»…  ({min(done_n + 1, len(files))} di {len(files)})")
+            time.sleep(0.05)
+        progress.close()
+
+        done, failed = state["done"], state["failed"]
+        head = "Conversione interrotta.\n\n" if progress.cancelled else ""
+        msg = head + f"Convertiti in PDF: {len(done)} file su {len(files)}."
+        if done:
+            msg += f"\nI PDF sono nella cartella «{folder.name}»."
+        if failed:
+            shown = "\n".join(f"• {n}: {e}" for n, e in failed[:12])
+            msg += f"\n\nNon riusciti ({len(failed)}):\n{shown}"
+            if len(failed) > 12:
+                msg += f"\n… e altri {len(failed) - 12}."
+        (messagebox.showwarning if failed else messagebox.showinfo)(APP_NAME, msg, parent=self.root)
+        self.status(f"Cartella convertita: {len(done)} PDF creati"
+                    + (f", {len(failed)} non riusciti" if failed else "") + ".")
+        if done and not progress.cancelled and messagebox.askyesno(APP_NAME, "Vuoi aprire la cartella con i PDF?",
+                                                                   parent=self.root):
+            try:
+                os.startfile(str(folder))
+            except OSError:
+                pass
 
     def cmd_new(self, fmt=None, landscape=None):
         if fmt is None:
@@ -5562,9 +5823,59 @@ class App:
         self.status(f"«{Path(path).name}» convertito in PDF: salvalo con «Salva con nome…».")
         return True
 
+    def _open_p7m(self, path):
+        """Apre il documento contenuto in un file .p7m (firma digitale) come nuova scheda non salvata."""
+        try:
+            data = extract_p7m(path)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"«{Path(path).name}» non si è potuto aprire:\n\n{exc}", parent=self.root)
+            return False
+        inner = inner_name_for(path, data)
+        tmp_dir = Path(tempfile.mkdtemp(prefix="tep-p7m"))
+        try:
+            (tmp_dir / inner).write_bytes(data)
+            if Path(inner).suffix.lower() in OFFICE_EXTS:
+                tmp_pdf = self._office_to_temp_pdf(str(tmp_dir / inner))
+                doc = load_as_pdf(tmp_pdf, self.root) if tmp_pdf else None
+            else:
+                doc = load_as_pdf(str(tmp_dir / inner), self.root)   # PDF o immagine
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Il contenuto di «{Path(path).name}» ({inner}) non è un PDF, "
+                                 f"un'immagine o un documento Office:\n\n{exc}", parent=self.root)
+            return False
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        if doc is None:
+            return False
+        self._add_tab(DocTab(doc, label=Path(inner).stem))
+        self.cfg["last_dir"] = str(Path(path).parent)
+        self.status(f"Aperto il contenuto di «{Path(path).name}» ({inner}): salvalo con «Salva con nome…».")
+        return True
+
+    def _as_source_pdf(self, path):
+        """Documento pymupdf da inserire, da un file PDF/immagine/Word-Excel/.p7m. None se non riuscito o annullato.
+
+        Può sollevare un'eccezione (gestita da chi chiama); per Office/.p7m usa la finestra di avanzamento."""
+        ext = Path(path).suffix.lower()
+        if ext in P7M_EXTS:
+            data = extract_p7m(path)
+            tmp_dir = Path(tempfile.mkdtemp(prefix="tep-p7m"))
+            try:
+                (tmp_dir / inner_name_for(path, data)).write_bytes(data)
+                return self._as_source_pdf(str(tmp_dir / inner_name_for(path, data)))
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        if ext in OFFICE_EXTS:
+            tmp = self._office_to_temp_pdf(path)
+            return load_as_pdf(tmp, self.root) if tmp else None
+        return load_as_pdf(path, self.root)
+
     def open_file(self, path):
         """Apre il PDF in una nuova scheda (se è già aperto, passa alla sua scheda)."""
-        if Path(path).suffix.lower() in OFFICE_EXTS:
+        ext = Path(path).suffix.lower()
+        if ext in P7M_EXTS:
+            return self._open_p7m(path)
+        if ext in OFFICE_EXTS:
             return self._open_converted(path)
         key = os.path.normcase(os.path.abspath(path))
         for tab in self.tabs:
@@ -5597,11 +5908,7 @@ class App:
         sources = []
         for p in paths:
             try:
-                if Path(p).suffix.lower() in OFFICE_EXTS:
-                    tmp = self._office_to_temp_pdf(p)
-                    src = load_as_pdf(tmp, self.root) if tmp else None
-                else:
-                    src = load_as_pdf(p, self.root)
+                src = self._as_source_pdf(p)
             except Exception as exc:
                 messagebox.showerror(APP_NAME, f"Impossibile aprire «{Path(p).name}»:\n{exc}", parent=self.root)
                 continue
@@ -5621,20 +5928,16 @@ class App:
         self._update_controls()
         self.status(f"Aggiunte {pos - first} pagine da {len(sources)} file.")
 
-    def cmd_save(self):
+    def _can_save(self):
+        """True se c'è qualcosa da salvare; avvisa e torna False se il documento è vuoto o assente."""
         if self.doc is not None and not len(self.doc):
             messagebox.showinfo(APP_NAME, "Il documento è vuoto: trascinaci prima qualche pagina "
                                 "da un'altra scheda, oppure usa «Aggiungi…».", parent=self.root)
             return False
-        if not self.doc:
-            return False
-        # si propone la cartella dell'ultimo salvataggio (la prima volta quella del documento)
-        name = Path(self.path).stem + ".pdf" if self.path else f"{self.tab.name}.pdf"
-        folder = self._dir("save", str(Path(self.path).parent) if self.path else None)
-        path = filedialog.asksaveasfilename(parent=self.root, title=f"Salva «{self.tab.name}»", initialdir=folder,
-                                            initialfile=name, defaultextension=".pdf", filetypes=PDF_TYPES)
-        if not path:
-            return False
+        return bool(self.doc)
+
+    def _save_to(self, path):
+        """Scrive il documento nel percorso dato e aggiorna lo stato (comune a «Salva» e «Salva con nome»)."""
         if self.tab.fonts_added:
             try:
                 self.doc.subset_fonts()   # dei font di sistema usati si tengono solo i caratteri scritti
@@ -5653,6 +5956,27 @@ class App:
         self._doc_changed()
         self.status(f"Salvato: {path}")
         return True
+
+    def cmd_save_now(self):
+        """«Salva»: sovrascrive il file già aperto senza chiedere; se non ha ancora un percorso, chiede come «Salva con nome»."""
+        if not self._can_save():
+            return False
+        if not self.path:
+            return self.cmd_save()
+        return self._save_to(self.path)
+
+    def cmd_save(self):
+        """«Salva con nome»: chiede sempre dove salvare."""
+        if not self._can_save():
+            return False
+        # si propone la cartella dell'ultimo salvataggio (la prima volta quella del documento)
+        name = Path(self.path).stem + ".pdf" if self.path else f"{self.tab.name}.pdf"
+        folder = self._dir("save", str(Path(self.path).parent) if self.path else None)
+        path = filedialog.asksaveasfilename(parent=self.root, title=f"Salva «{self.tab.name}»", initialdir=folder,
+                                            initialfile=name, defaultextension=".pdf", filetypes=PDF_TYPES)
+        if not path:
+            return False
+        return self._save_to(path)
 
     def _write_file(self, path, data):
         tmp = Path(path + ".tmp")
@@ -8113,15 +8437,15 @@ class App:
         self.status(f"{APP_NAME} tolto dai programmi per i PDF: scegli in Windows quale usare al suo posto.")
 
     def _on_files_dropped(self, files):
-        """File trascinati da Esplora risorse sulla finestra: i PDF e le immagini si aprono in nuove schede."""
-        accepted = (".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp") + tuple(OFFICE_EXTS)
+        """File trascinati da Esplora risorse sulla finestra: PDF, immagini, Word/Excel e firme .p7m si aprono in schede."""
+        accepted = {".pdf"} | IMAGE_EXTS | CONVERTIBLE_EXTS
         others = [Path(f).name for f in files if Path(f).suffix.lower() not in accepted]
         for f in files:
             if Path(f).suffix.lower() in accepted:
                 self.open_file(f)
         self.root.lift()
         if others:
-            messagebox.showinfo(APP_NAME, "Questi file non sono PDF, immagini o documenti Word/Excel "
+            messagebox.showinfo(APP_NAME, "Questi file non sono PDF, immagini, documenti Word/Excel o firme .p7m "
                                 "e non sono stati aperti:\n" + "\n".join(others), parent=self.root)
 
 

@@ -151,6 +151,7 @@ def pyinstaller(mode, distpath, ico, work):
     """mode: "--onefile" (un solo exe) o "--onedir" (cartella, si avvia più in fretta: per l'installatore)."""
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", mode, "--windowed",
                     "--name", APP_NAME, "--icon", str(ico),
+                    "--collect-submodules", "asn1crypto",                       # lettura dei file firmati .p7m
                     "--add-data", f"{HERE / 'tessdata'}{os.pathsep}tessdata",   # lingue dell'OCR
                     "--add-data", f"{HERE / GUIDE_NAME}{os.pathsep}.",           # guida illustrata
                     "--add-data", f"{HERE / 'LICENSE'}{os.pathsep}.",            # testo della licenza AGPL-3.0

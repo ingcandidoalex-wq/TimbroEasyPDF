@@ -424,7 +424,13 @@ invisibile. Da quel momento si può cercare, copiare, correggere ed esportare in
 (tutte, la corrente o un intervallo) e il numero di copie.</p>
 <p><b>File › Apri Word o Excel (converti in PDF)…</b> apre un documento Word o un foglio Excel
 convertendolo in PDF, pronto da timbrare (serve Word o Excel installato sul PC, oppure LibreOffice).
-Puoi anche trascinare il file Word/Excel sulla finestra.</p>"""),
+Puoi anche trascinare il file Word/Excel sulla finestra.</p>
+<p><b>File › Apri un file firmato .p7m…</b> estrae il documento contenuto in una firma digitale (CAdES)
+e lo apre come PDF (se dentro c'è un Word, un Excel o un'immagine, lo converte). Vale anche trascinando
+il file <i>.p7m</i> sulla finestra.</p>
+<p><b>File › Converti una cartella in PDF…</b> trasforma in PDF, in un colpo solo, tutti i Word/Excel, le
+immagini e i file <i>.p7m</i> contenuti in una cartella: scegli la cartella e i PDF vengono salvati lì,
+con lo stesso nome e senza sovrascrivere i file già presenti.</p>"""),
     ("Sistemare barre e pannelli", "disposizione", 100, """
 <p>Gli interruttori <b>Testo</b>, <b>Pagine</b>, <b>Timbri</b> in alto a destra (e le stesse voci nel menu
 <b>Visualizza</b>) mostrano e nascondono i gruppi di strumenti e il pannello dei timbri. Trascina la
