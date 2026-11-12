@@ -66,8 +66,30 @@ dlg.range_var.set("1-3, 5, 9-10")
 assert dlg._pages_from_range() == [0, 1, 2, 4, 8, 9], dlg._pages_from_range()
 dlg.range_var.set("8-100")   # fuori intervallo: scartate quelle oltre il totale
 assert dlg._pages_from_range() == [7, 8, 9], dlg._pages_from_range()
-dlg.top.destroy()
+# il dialogo espone il pulsante «Proprietà…» e parte senza impostazioni personalizzate
+assert hasattr(dlg, "devmode") and dlg.devmode is None, "il dialogo deve partire senza DEVMODE"
+assert callable(getattr(dlg, "_properties", None)), "manca il pulsante Proprietà (metodo _properties)"
+dlg.scope.set("all")
+dlg._ok()
+assert dlg.result is not None and len(dlg.result) == 4, "il risultato deve includere il devmode"
 root.destroy()
-print("3. intervallo pagine OK")
+print("3. intervallo pagine, Proprietà e risultato a 4 valori OK")
+
+# ---------------------------------------------------------------- 4. impostazioni stampante (DEVMODE)
+if PRINT_TO_PDF in printers:
+    dm = tp.printer_devmode(PRINT_TO_PDF)   # senza prompt: le impostazioni attuali, come byte
+    assert isinstance(dm, (bytes, bytearray)) and len(dm) > 0, "printer_devmode deve dare dei byte"
+    out2 = WORK / "stampa_devmode.pdf"
+    out2.unlink(missing_ok=True)
+    ok = tp.print_document(PRINT_TO_PDF, doc, [1], copies=1, devmode=dm, output=str(out2))
+    for _ in range(60):
+        if out2.exists() and out2.stat().st_size > 0:
+            break
+        time.sleep(0.2)
+    assert ok and out2.exists() and out2.stat().st_size > 1000, "stampa con DEVMODE non riuscita"
+    assert len(pymupdf.open(out2)) == 1, "attesa 1 pagina"
+    print("4. DEVMODE letto e passato alla stampa OK")
+else:
+    print("4. «Microsoft Print to PDF» non disponibile: salto la prova DEVMODE")
 
 print("TUTTI I TEST OK")

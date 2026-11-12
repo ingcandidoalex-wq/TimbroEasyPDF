@@ -33,7 +33,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.6"
+APP_VERSION = "2.7"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -219,6 +219,10 @@ SCHEDE E PAGINE
 • «Converti una cartella in PDF» (menu File) trasforma in PDF, in un colpo solo,
   tutti i Word/Excel, le immagini e i file .p7m di una cartella, salvando i PDF
   nella stessa cartella senza sovrascrivere i file già presenti.
+• «Comprimi PDF» (menu File o pulsante nella barra) salva una copia più leggera:
+  scegli un livello (leggera, media, massima) oppure «Personalizzato» per impostare
+  a mano i DPI delle immagini a colori e del testo in bianco e nero. Il documento
+  aperto non cambia.
 
 TESTO
 • Modifica testo: clicca una riga per correggerla. Il vecchio testo viene
@@ -353,10 +357,50 @@ def list_printers():
     return default, names
 
 
-def print_document(printer, doc, pages, copies=1, on_progress=None, output=None):
+def printer_devmode(printer, hwnd=0, prompt=False, devmode=None):
+    """Le impostazioni (DEVMODE, come bytes) di una stampante: formato carta, orientamento, qualità…
+
+    prompt=True apre la finestra «Proprietà» di Windows (modale alla finestra hwnd) e restituisce il
+    DEVMODE scelto, oppure None se l'utente annulla. Senza prompt dà le impostazioni attuali.
+    devmode: un DEVMODE di partenza (bytes) da cui iniziare, altrimenti i valori predefiniti."""
+    import ctypes
+    from ctypes import wintypes
+    winspool = ctypes.WinDLL("winspool.drv")
+    winspool.OpenPrinterW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.HANDLE), wintypes.LPVOID]
+    winspool.OpenPrinterW.restype = wintypes.BOOL
+    winspool.ClosePrinter.argtypes = [wintypes.HANDLE]
+    winspool.DocumentPropertiesW.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.LPCWSTR,
+                                             wintypes.LPVOID, wintypes.LPVOID, wintypes.DWORD]
+    winspool.DocumentPropertiesW.restype = ctypes.c_long
+    DM_OUT_BUFFER, DM_IN_PROMPT, DM_IN_BUFFER = 2, 4, 8
+    h = wintypes.HANDLE()
+    if not winspool.OpenPrinterW(printer, ctypes.byref(h), None):
+        raise OSError(f"Stampante non disponibile: {printer}")
+    try:
+        needed = winspool.DocumentPropertiesW(0, h, printer, None, None, 0)   # dimensione del DEVMODE
+        if needed <= 0:
+            return None
+        out = ctypes.create_string_buffer(needed)
+        mode = DM_OUT_BUFFER | (DM_IN_PROMPT if prompt else 0)
+        inp = None
+        if devmode:
+            inp = ctypes.create_string_buffer(bytes(devmode), len(devmode))
+            mode |= DM_IN_BUFFER
+        res = winspool.DocumentPropertiesW(hwnd, h, printer, ctypes.cast(out, wintypes.LPVOID),
+                                           ctypes.cast(inp, wintypes.LPVOID) if inp else None, mode)
+        if res < 0 or (prompt and res != 1):   # IDOK = 1; annullato o errore
+            return None
+        return out.raw
+    finally:
+        winspool.ClosePrinter(h)
+
+
+def print_document(printer, doc, pages, copies=1, on_progress=None, output=None, devmode=None):
     """Stampa le pagine (indici) del documento sulla stampante indicata, disegnandole via GDI.
 
-    output: percorso di un file su cui scrivere invece che sulla carta (es. «Microsoft Print to PDF»)."""
+    output: percorso di un file su cui scrivere invece che sulla carta (es. «Microsoft Print to PDF»).
+    devmode: le impostazioni della stampante (bytes da printer_devmode) — formato carta, orientamento…;
+    None usa i valori predefiniti della stampante."""
     import ctypes
     from ctypes import wintypes
     gdi32 = ctypes.windll.gdi32
@@ -380,7 +424,8 @@ def print_document(printer, doc, pages, copies=1, on_progress=None, output=None)
     gdi32.StartDocW.argtypes = [vp, vp]
     gdi32.StretchDIBits.argtypes = [vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, ctypes.c_int, vp, vp, ctypes.c_uint, wintypes.DWORD]
-    dc = gdi32.CreateDCW("WINSPOOL", printer, None, None)
+    devbuf = ctypes.create_string_buffer(bytes(devmode), len(devmode)) if devmode else None   # tenuto vivo per CreateDCW
+    dc = gdi32.CreateDCW("WINSPOOL", printer, None, ctypes.cast(devbuf, vp) if devbuf else None)
     if not dc:
         raise OSError(f"Stampante non disponibile: {printer}")
     HORZRES, VERTRES, LOGPIXELSX, LOGPIXELSY = 8, 10, 88, 90
@@ -426,6 +471,46 @@ def print_document(printer, doc, pages, copies=1, on_progress=None, output=None)
         raise
     finally:
         gdi32.DeleteDC(dc)
+
+
+def human_size(n):
+    """Dimensione in byte resa leggibile (B, KB, MB, GB)."""
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
+# preset di compressione del PDF: (DPI immagini a colori/grigi, DPI testo in bianco e nero, qualità JPEG);
+# 0 = non ridurre quel tipo. «leggera» ricompatta soltanto, senza perdite.
+COMPRESS_PRESETS = {
+    "leggera": (0, 0, 75),
+    "media": (150, 0, 75),
+    "massima": (96, 200, 55),
+}
+
+
+def compress_pdf(data, out_path, img_dpi=0, text_dpi=0, quality=75):
+    """Scrive una copia più leggera del PDF (dai suoi byte) sul percorso indicato.
+
+    img_dpi: DPI massimo per le immagini a colori/grigi (0 = non ridurle); vengono ricompresse in JPEG
+             alla qualità 'quality'. text_dpi: DPI massimo per le immagini in bianco e nero (scansioni di
+             testo, 1 bit; 0 = non ridurle), lasciate senza perdite. Ritorna (dimensione_prima, dopo) in byte."""
+    work = pymupdf.open("pdf", data)
+    try:
+        # dpi_threshold dev'essere > dpi_target: +1 significa «riduci a img_dpi tutto ciò che lo supera»
+        if img_dpi:   # immagini a colori/grigi, sia JPEG sia non compresse (lossy+lossless), non le bitonali
+            work.rewrite_images(dpi_threshold=img_dpi + 1, dpi_target=img_dpi, quality=quality,
+                                lossy=True, lossless=True, bitonal=False, color=True, gray=True)
+        if text_dpi:  # scansioni in bianco e nero (1 bit): abbasso la risoluzione ma le tengo nitide, senza JPEG
+            work.rewrite_images(dpi_threshold=text_dpi + 1, dpi_target=text_dpi, quality=quality,
+                                lossy=False, lossless=True, bitonal=True, color=False, gray=False)
+        work.save(out_path, garbage=4, deflate=True, deflate_images=True, deflate_fonts=True,
+                  clean=True, use_objstms=True)
+    finally:
+        work.close()
+    return len(data), os.path.getsize(out_path)
 
 
 def place_dialog(top, parent):
@@ -2475,7 +2560,8 @@ class PrintDialog:
     """Scelta di stampante, pagine e numero di copie."""
 
     def __init__(self, parent, current, selected, total, printers, default):
-        self.result = None   # (stampante, [indici pagina], copie)
+        self.result = None   # (stampante, [indici pagina], copie, devmode)
+        self.devmode = None   # impostazioni della stampante scelte da «Proprietà…» (bytes), None = predefinite
         self.total = total
         self.choices = {"current": [current], "selected": selected, "all": list(range(total))}
         top = self.top = tk.Toplevel(parent)
@@ -2488,8 +2574,10 @@ class PrintDialog:
         row.pack(fill=tk.X)
         ttk.Label(row, text="Stampante:").pack(side=tk.LEFT)
         self.printer = tk.StringVar(value=default if default in printers else (printers[0] if printers else ""))
-        ttk.Combobox(row, textvariable=self.printer, values=printers, state="readonly",
-                     width=36).pack(side=tk.LEFT, padx=(6, 0))
+        combo = ttk.Combobox(row, textvariable=self.printer, values=printers, state="readonly", width=30)
+        combo.pack(side=tk.LEFT, padx=(6, 0))
+        combo.bind("<<ComboboxSelected>>", lambda e: setattr(self, "devmode", None))   # cambiata stampante: reset
+        ttk.Button(row, text="Proprietà…", command=self._properties).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Label(body, text="Pagine:").pack(anchor="w", pady=(12, 0))
         self.scope = tk.StringVar(value="all")
         options = [("current", f"Pagina corrente ({current + 1})")]
@@ -2524,6 +2612,23 @@ class PrintDialog:
     def _sync(self):
         self.range_entry.configure(state="normal" if self.scope.get() == "range" else "disabled")
 
+    def _properties(self):
+        """Apre la finestra «Proprietà» della stampante scelta (formato carta, orientamento, qualità…)."""
+        printer = self.printer.get()
+        if not printer:
+            messagebox.showwarning(APP_NAME, "Nessuna stampante selezionata.", parent=self.top)
+            return
+        dm = None
+        try:
+            self.top.grab_release()   # lascio spazio alla finestra modale di Windows
+            dm = printer_devmode(printer, hwnd=self.top.winfo_id(), prompt=True, devmode=self.devmode)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Proprietà della stampante non disponibili:\n{exc}", parent=self.top)
+        finally:
+            self.top.grab_set()
+        if dm is not None:
+            self.devmode = dm
+
     def _pages_from_range(self):
         pages = []
         for part in self.range_var.get().replace(" ", "").split(","):
@@ -2555,7 +2660,81 @@ class PrintDialog:
             copies = max(1, int(self.copies.get() or 1))
         except (tk.TclError, ValueError):
             copies = 1
-        self.result = (self.printer.get(), pages, copies)
+        self.result = (self.printer.get(), pages, copies, self.devmode)
+        self.top.destroy()
+
+
+class CompressDialog:
+    """Scelta della compressione del PDF (stile PDF24): preset pronti oppure DPI a mano."""
+
+    PRESETS = COMPRESS_PRESETS
+    LEVELS = [("leggera", "Leggera — nessuna perdita di qualità (ricompatta il file)"),
+              ("media", "Media — immagini a 150 DPI (buon compromesso)"),
+              ("massima", "Massima — immagini a 96 DPI, testo a 200 DPI"),
+              ("personalizzato", "Personalizzato — imposta i DPI a mano")]
+
+    def __init__(self, parent):
+        self.result = None   # dict con img_dpi, text_dpi, quality, oppure None
+        top = self.top = tk.Toplevel(parent)
+        top.title("Comprimi PDF")
+        top.transient(parent)
+        top.resizable(False, False)
+        body = ttk.Frame(top, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="Quanto comprimere il PDF:").pack(anchor="w")
+        self.level = tk.StringVar(value="media")
+        for value, text in self.LEVELS:
+            ttk.Radiobutton(body, text=text, value=value, variable=self.level,
+                            command=self._on_level).pack(anchor="w", padx=(12, 0), pady=1)
+        grid = ttk.Frame(body)
+        grid.pack(anchor="w", padx=(30, 0), pady=(4, 0))
+        ttk.Label(grid, text="DPI immagini (colori/grigi):").grid(row=0, column=0, sticky="w", pady=1)
+        self.img_dpi = tk.StringVar(value="150")
+        self.img_spin = ttk.Spinbox(grid, from_=30, to=1200, increment=10, width=6, textvariable=self.img_dpi)
+        self.img_spin.grid(row=0, column=1, padx=(6, 0))
+        ttk.Label(grid, text="DPI testo (bianco e nero):").grid(row=1, column=0, sticky="w", pady=1)
+        self.text_dpi = tk.StringVar(value="300")
+        self.text_spin = ttk.Spinbox(grid, from_=30, to=1200, increment=10, width=6, textvariable=self.text_dpi)
+        self.text_spin.grid(row=1, column=1, padx=(6, 0))
+        ttk.Label(body, text="0 = non ridurre. Il documento aperto non viene toccato: salvi una copia.",
+                  foreground="#555").pack(anchor="w", pady=(8, 0))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, pady=(14, 0))
+        ttk.Button(buttons, text="Annulla", command=top.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Comprimi", command=self._ok).pack(side=tk.RIGHT, padx=6)
+        top.bind("<Return>", lambda e: self._ok())
+        top.bind("<Escape>", lambda e: top.destroy())
+        self._on_level()
+        place_dialog(top, parent)
+
+    def _on_level(self):
+        """Con un preset i campi DPI mostrano i suoi valori e sono bloccati; «Personalizzato» li libera."""
+        preset = self.PRESETS.get(self.level.get())
+        if preset:
+            img, txt, _q = preset
+            self.img_dpi.set(str(img))
+            self.text_dpi.set(str(txt))
+            state = "disabled"
+        else:
+            state = "normal"
+        self.img_spin.configure(state=state)
+        self.text_spin.configure(state=state)
+
+    def _ok(self):
+        preset = self.PRESETS.get(self.level.get())
+        if preset:
+            img, txt, quality = preset
+        else:
+            try:
+                img, txt = int(float(self.img_dpi.get() or 0)), int(float(self.text_dpi.get() or 0))
+            except ValueError:
+                messagebox.showwarning(APP_NAME, "Inserisci i DPI come numeri interi.", parent=self.top)
+                return
+            if img < 0 or txt < 0:
+                messagebox.showwarning(APP_NAME, "I DPI non possono essere negativi.", parent=self.top)
+                return
+            quality = 75
+        self.result = {"img_dpi": img, "text_dpi": txt, "quality": quality}
         self.top.destroy()
 
 
@@ -4422,6 +4601,11 @@ class App:
                    tip="Salva con nome  (Ctrl+Maiusc+S)")
         bar_button(g, "" if add_i else "Aggiungi…", lambda: self.cmd_add(at_end=True), image=add_i,
                    tip="Aggiungi file in fondo (PDF, immagini, Word, Excel)…  (Ctrl+I)")
+        print_i = self._glyph("E749")
+        bar_button(g, "" if print_i else "Stampa", self.cmd_print, image=print_i, tip="Stampa  (Ctrl+P)")
+        compress_i = self._mdl2(0xE73F)
+        bar_button(g, "" if compress_i else "Comprimi", self.cmd_compress, image=compress_i,
+                   tip="Comprimi il PDF: salva una copia più leggera…")
         bar.separator()
 
         g = bar.labeled_group("Modifica")
@@ -4442,7 +4626,7 @@ class App:
         bar_button(g, "↻", lambda: self.rotate(90), width=3, tip="Ruota a destra  (Ctrl+R)")
         bar_button(g, "▲", lambda: self.move_pages(-1), width=3, tip="Sposta su le pagine selezionate")
         bar_button(g, "▼", lambda: self.move_pages(1), width=3, tip="Sposta giù le pagine selezionate")
-        bar_button(g, "", self.delete_pages, image=self._glyph("E74D"), tip="Elimina le pagine selezionate")
+        bar_button(g, "", self.delete_pages, image=self._glyph("E74D", 16), tip="Elimina le pagine selezionate")
         bar.separator()
 
         g = bar.labeled_group("Zoom")
@@ -5092,6 +5276,8 @@ class App:
         f.add_command(label="Esporta in Word…", accelerator="Ctrl+Maiusc+W", command=self.cmd_export_word)
         f.add_command(label="Stampa…", accelerator="Ctrl+P", command=self.cmd_print,
                       image=self._glyph("E749"), **ic)
+        f.add_command(label="Comprimi PDF (salva una copia più leggera)…", command=self.cmd_compress,
+                      image=self._mdl2(0xE73F), **ic)
         f.add_separator()
         f.add_command(label="Unisci le schede in un nuovo documento…", accelerator="Ctrl+U", command=self.cmd_merge_tabs)
         f.add_command(label="Dividi il documento in più file…", accelerator="Ctrl+D", command=self.cmd_split)
@@ -5107,15 +5293,19 @@ class App:
         e.add_command(label="Annulla", accelerator="Ctrl+Z", command=self.undo, image=self._glyph("E7A7"), **ic)
         e.add_command(label="Ripristina", accelerator="Ctrl+Y", command=self.redo, image=self._glyph("E7A6"), **ic)
         e.add_separator()
-        e.add_command(label="Ruota a destra", accelerator="Ctrl+R", command=lambda: self.rotate(90))
-        e.add_command(label="Ruota a sinistra", accelerator="Ctrl+Maiusc+R", command=lambda: self.rotate(-90))
-        e.add_command(label="Ruota tutte le pagine a destra", command=lambda: self.rotate(90, all_pages=True))
-        e.add_command(label="Ruota tutte le pagine a sinistra", command=lambda: self.rotate(-90, all_pages=True))
+        e.add_command(label="Ruota a destra", accelerator="Ctrl+R", command=lambda: self.rotate(90),
+                      image=self._mdl2(0xE14A), **ic)
+        e.add_command(label="Ruota a sinistra", accelerator="Ctrl+Maiusc+R", command=lambda: self.rotate(-90),
+                      image=self._mdl2(0xE7AD), **ic)
+        e.add_command(label="Ruota tutte le pagine a destra", command=lambda: self.rotate(90, all_pages=True),
+                      image=self._mdl2(0xE14A), **ic)
+        e.add_command(label="Ruota tutte le pagine a sinistra", command=lambda: self.rotate(-90, all_pages=True),
+                      image=self._mdl2(0xE7AD), **ic)
         e.add_separator()
         e.add_command(label="Sposta su", accelerator="Ctrl+↑", command=lambda: self.move_pages(-1))
         e.add_command(label="Sposta giù", accelerator="Ctrl+↓", command=lambda: self.move_pages(1))
         e.add_command(label="Elimina pagine selezionate", accelerator="Canc", command=self.delete_pages,
-                      image=self._glyph("E74D"), **ic)
+                      image=self._glyph("E74D", 16), **ic)
         e.add_command(label="Seleziona tutte le pagine", accelerator="Ctrl+A", command=self.select_all)
         m.add_cascade(label="Pagine", menu=e)
 
@@ -7798,7 +7988,7 @@ class App:
         self.root.wait_window(dialog.top)
         if not dialog.result:
             return
-        printer, pages, copies = dialog.result
+        printer, pages, copies, devmode = dialog.result
         total = len(pages) * copies
         progress = ProgressWindow(self.root, "Stampa in corso", maximum=total)
 
@@ -7807,7 +7997,7 @@ class App:
             return not progress.cancelled
 
         try:
-            ok = print_document(printer, self.doc, pages, copies, on_progress)
+            ok = print_document(printer, self.doc, pages, copies, on_progress, devmode=devmode)
         except Exception as exc:
             progress.close()
             messagebox.showerror(APP_NAME, f"Stampa non riuscita:\n{exc}", parent=self.root)
@@ -7818,6 +8008,59 @@ class App:
             self.status(f"Inviato in stampa a «{printer}»: {len(pages)} pagine{extra}.")
         else:
             self.status("Stampa annullata.")
+
+    def cmd_compress(self):
+        """Salva una copia più leggera del documento aperto, scegliendo il livello (stile PDF24)."""
+        if not self.doc:
+            return
+        dialog = CompressDialog(self.root)
+        self.root.wait_window(dialog.top)
+        if not dialog.result:
+            return
+        settings = dialog.result
+        stem = Path(self.path).stem if self.path else "documento"
+        folder = str(Path(self.path).parent) if self.path else None
+        out = filedialog.asksaveasfilename(parent=self.root, title="Salva PDF compresso",
+                                           initialdir=self._dir("save", folder),
+                                           initialfile=f"{stem}-compresso.pdf", defaultextension=".pdf",
+                                           filetypes=PDF_TYPES)
+        if not out:
+            return
+        data = self.doc.tobytes()
+        progress = ProgressWindow(self.root, "Comprimi PDF", can_cancel=False)
+        progress.update(0, "Compressione in corso…")
+        result = {}
+        worker = threading.Thread(target=lambda: self._do_compress(data, settings, out, result), daemon=True)
+        worker.start()
+
+        def wait():
+            if worker.is_alive():
+                self.root.after(150, wait)
+                return
+            progress.close()
+            if "error" in result:
+                messagebox.showerror(APP_NAME, f"Compressione non riuscita:\n{result['error']}", parent=self.root)
+                return
+            before, after = result["sizes"]
+            self._remember_dir("save", str(Path(out).parent))
+            if after < before:
+                risparmio = (1 - after / before) * 100
+                messagebox.showinfo(APP_NAME, f"PDF compresso salvato:\n{out}\n\nDa {human_size(before)} a "
+                                    f"{human_size(after)}  ({risparmio:.0f}% in meno).", parent=self.root)
+                self.status(f"PDF compresso: {human_size(before)} → {human_size(after)} ({risparmio:.0f}% in meno).")
+            else:
+                messagebox.showinfo(APP_NAME, f"PDF salvato:\n{out}\n\nIl file era già compatto: da "
+                                    f"{human_size(before)} a {human_size(after)}, nessun risparmio.", parent=self.root)
+                self.status(f"PDF salvato: {human_size(after)} (era già compatto).")
+
+        wait()
+
+    def _do_compress(self, data, settings, out, result):
+        try:
+            result["sizes"] = compress_pdf(data, out, img_dpi=settings["img_dpi"],
+                                           text_dpi=settings["text_dpi"], quality=settings["quality"])
+        except Exception as exc:
+            result["error"] = exc
 
     def cmd_export_word(self):
         if not self.doc:

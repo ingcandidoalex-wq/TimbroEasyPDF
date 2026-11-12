@@ -420,8 +420,9 @@ invisibile. Da quel momento si può cercare, copiare, correggere ed esportare in
 <p>Scrivi nella casella <b>Cerca</b> (1) e premi Invio: i risultati si evidenziano sulla pagina (2);
 ▲ ▼ passano al precedente e al successivo.</p>
 <p><b>Esporta in Word…</b> crea un documento Word usando Microsoft Word installato sul PC.
-<b>File › Stampa…</b> (Ctrl+P) manda il documento alla stampante: scegli stampante, quali pagine
-(tutte, la corrente o un intervallo) e il numero di copie.</p>
+<b>File › Stampa…</b> (Ctrl+P, anche il pulsante nella barra) manda il documento alla stampante: scegli
+stampante, quali pagine (tutte, la corrente o un intervallo) e il numero di copie. Il pulsante
+<b>Proprietà…</b> apre le impostazioni della stampante (formato della carta, orientamento, qualità).</p>
 <p><b>File › Apri Word o Excel (converti in PDF)…</b> apre un documento Word o un foglio Excel
 convertendolo in PDF, pronto da timbrare (serve Word o Excel installato sul PC, oppure LibreOffice).
 Puoi anche trascinare il file Word/Excel sulla finestra.</p>
@@ -430,7 +431,10 @@ e lo apre come PDF (se dentro c'è un Word, un Excel o un'immagine, lo converte)
 il file <i>.p7m</i> sulla finestra.</p>
 <p><b>File › Converti una cartella in PDF…</b> trasforma in PDF, in un colpo solo, tutti i Word/Excel, le
 immagini e i file <i>.p7m</i> contenuti in una cartella: scegli la cartella e i PDF vengono salvati lì,
-con lo stesso nome e senza sovrascrivere i file già presenti.</p>"""),
+con lo stesso nome e senza sovrascrivere i file già presenti.</p>
+<p><b>File › Comprimi PDF…</b> (anche il pulsante nella barra) salva una <b>copia più leggera</b> del
+documento: scegli un livello (leggera, media o massima) oppure <b>Personalizzato</b> per indicare a mano
+i DPI delle immagini a colori e del testo in bianco e nero. Il documento aperto non viene toccato.</p>"""),
     ("Sistemare barre e pannelli", "disposizione", 100, """
 <p>Gli interruttori <b>Testo</b>, <b>Pagine</b>, <b>Timbri</b> in alto a destra (e le stesse voci nel menu
 <b>Visualizza</b>) mostrano e nascondono i gruppi di strumenti e il pannello dei timbri. Trascina la
