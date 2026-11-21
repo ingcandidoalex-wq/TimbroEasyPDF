@@ -15,3 +15,7 @@ Guida TimbroPDF.pdf
 # mai nel repository: chiavi private dei certificati
 *.pfx
 *.p12
+
+# mai nel repository: chiave privata per generare le password di sblocco
+*.pem
+chiave_licenza_privata.pem

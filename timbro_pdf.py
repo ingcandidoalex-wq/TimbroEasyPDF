@@ -33,7 +33,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.8"
+APP_VERSION = "2.9"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -3307,6 +3307,11 @@ UPDATE_REPO = "ingcandidoalex-wq/TimbroEasyPDF"
 UPDATE_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
 DOWNLOAD_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
 SOURCE_URL = f"https://github.com/{UPDATE_REPO}"   # codice sorgente (licenza AGPL-3.0)
+# «modulo email a pagamento»: il promemoria periodico si disattiva con una password di sblocco (vedi più sotto)
+LICENSE_EMAIL = "ing.candido.alex@gmail.com"   # dove inoltrare il codice del PC per ricevere la password
+LICENSE_PUBKEY = "ZxrjMPYLqVVykzuhhwJEkCG/prVzMWUnUPaYrrUGzc8="   # chiave pubblica Ed25519 (la privata resta solo all'autore)
+NAG_MINUTI = 30        # ogni quanti minuti ricompare il promemoria finché non si sblocca
+LICENSE_GIORNI = 365   # durata predefinita di uno sblocco; poi il promemoria torna e serve una nuova password
 LICENSE_VERSION = 2   # va aumentato quando cambiano le condizioni: si richiede di accettarle di nuovo
 # condizioni d'uso mostrate dal programma e dal setup (il testo legale della licenza è nel file LICENSE)
 LICENSE_TEXT = f"""\
@@ -3479,6 +3484,90 @@ class FeedbackDialog:
         self.top.clipboard_clear()
         self.top.clipboard_append(FEEDBACK_EMAIL)
         self.note.configure(foreground="#2e7d32", text=f"Indirizzo copiato: {FEEDBACK_EMAIL}")
+
+
+class NagDialog:
+    """Promemoria: invita a sostenere il programma inoltrando il codice del PC, e accetta la password di sblocco."""
+
+    def __init__(self, parent, app):
+        self.app = app
+        self._code = app._machine_code()
+        top = self.top = tk.Toplevel(parent)
+        top.title(f"{APP_NAME} – Sostieni il programma")
+        if parent.winfo_viewable():
+            top.transient(parent)
+        top.resizable(False, False)
+        body = ttk.Frame(top, padding=16)
+        body.pack(fill=tk.BOTH, expand=True)
+        head = ttk.Frame(body)
+        head.pack(fill=tk.X)
+        self._icon = photo_from_pixmap(icon_pixmap(48))
+        tk.Label(head, image=self._icon).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(head, wraplength=560, justify=tk.LEFT, font=("Segoe UI", 10), text=(
+            f"Grazie per usare {APP_NAME}!\n\nSe il programma ti piace e vuoi disattivare questi messaggi, invia il "
+            f"codice qui sotto a  {LICENSE_EMAIL}  : riceverai una password di sblocco valida un anno.")
+            ).pack(side=tk.LEFT, fill=tk.X)
+
+        cf = ttk.LabelFrame(body, text=" Il codice di questo computer ", padding=10)
+        cf.pack(fill=tk.X, pady=(12, 0))
+        code_box = tk.Text(cf, width=64, height=3, wrap="char", font=("Consolas", 9), relief=tk.SOLID, bd=1,
+                           bg="#fbfbfc", padx=8, pady=6)
+        code_box.insert("1.0", self._code)
+        code_box.configure(state=tk.DISABLED)
+        code_box.pack(fill=tk.X)
+        crow = ttk.Frame(cf)
+        crow.pack(anchor="w", pady=(8, 0))
+        ttk.Button(crow, text="Copia il codice", command=self._copy_code).pack(side=tk.LEFT)
+        ttk.Button(crow, text="Scrivi l'email…", command=self._mail).pack(side=tk.LEFT, padx=6)
+        self._cnote = ttk.Label(crow, foreground="#2e7d32")
+        self._cnote.pack(side=tk.LEFT, padx=6)
+
+        uf = ttk.LabelFrame(body, text=" Hai già la password di sblocco? ", padding=10)
+        uf.pack(fill=tk.X, pady=(12, 0))
+        self.pw = tk.StringVar()
+        entry = ttk.Entry(uf, textvariable=self.pw, width=64, font=("Consolas", 9))
+        entry.pack(fill=tk.X)
+        entry.bind("<Return>", lambda e: self._unlock())
+        self._unote = ttk.Label(uf, wraplength=560, justify=tk.LEFT)
+        self._unote.pack(anchor="w", pady=(6, 0))
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, pady=(14, 0))
+        ttk.Button(buttons, text="Chiudi", command=top.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Sblocca", command=self._unlock).pack(side=tk.RIGHT, padx=6)
+        top.bind("<Escape>", lambda e: top.destroy())
+        place_dialog(top, parent)
+        try:
+            top.grab_set()
+        except tk.TclError:
+            pass
+
+    def _copy_code(self):
+        self.top.clipboard_clear()
+        self.top.clipboard_append(self._code)
+        self._cnote.configure(foreground="#2e7d32", text="Codice copiato.")
+
+    def _mail(self):
+        from urllib.parse import quote
+        subject = quote(f"{APP_NAME} {APP_VERSION} – richiesta password di sblocco")
+        body = quote(f"Buongiorno,\nvorrei la password di sblocco di {APP_NAME} per questo computer.\n\n"
+                     f"Codice:\n{self._code}\n")
+        try:
+            os.startfile(f"mailto:{LICENSE_EMAIL}?subject={subject}&body={body}")
+        except OSError:
+            self._copy_code()
+            self._cnote.configure(foreground="#a15c00",
+                                  text=f"Nessun programma di posta: invia il codice copiato a {LICENSE_EMAIL}.")
+
+    def _unlock(self):
+        if verifica_token(self._code, self.pw.get()):
+            self.app.cfg["license_key"] = self.pw.get().strip()
+            messagebox.showinfo(APP_NAME, "Grazie! Il programma è stato sbloccato su questo computer: i messaggi "
+                                "non compariranno più per un anno.", parent=self.top)
+            self.top.destroy()
+        else:
+            self._unote.configure(foreground="#c62828", text="Password non valida o scaduta. Controlla di aver "
+                                  "incollato tutta la password ricevuta via email, generata per QUESTO computer.")
 
 
 def version_tuple(text):
@@ -4070,6 +4159,72 @@ def unprotect_secret(value):
         return None
 
 
+# ---------------------------------------------------------------------------- licenza / sblocco
+# Il promemoria si disattiva con una password (token) che firma, con la chiave privata dell'autore, il
+# codice di questo PC insieme a una data di scadenza. L'app ha solo la chiave pubblica e verifica la firma:
+# così la password non è falsificabile (anche col sorgente pubblico) ed è valida solo su quel PC e fino alla
+# scadenza. La chiave privata e lo strumento che genera le password stanno fuori dal programma (genera_sblocco.py).
+
+def _ps(script, timeout=15):
+    """Esegue PowerShell senza finestra e restituisce lo stdout ripulito (stringa vuota se qualcosa va storto)."""
+    exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    try:
+        res = subprocess.run([str(exe), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                              "-Command", script], capture_output=True, text=True, encoding="oem",
+                             errors="replace", timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return (res.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _solo_alnum(text):
+    return re.sub(r"[^0-9A-Za-z]", "", text or "")
+
+
+def hardware_fingerprint():
+    """(MAC della scheda di rete fisica, seriale del disco): identificatori stabili di questo PC, in MAIUSCOLO.
+
+    Se non si leggono, si ripiega su uuid.getnode() per il MAC e sul MachineGuid di Windows per il seriale.
+    """
+    mac = _solo_alnum(_ps("$a = Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' | "
+                          "Where-Object { $_.MACAddress } | Sort-Object MACAddress | Select-Object -First 1; "
+                          "if ($a) { $a.MACAddress }"))
+    if not mac:
+        mac = f"{uuid.getnode():012X}"
+    serial = _solo_alnum(_ps("$d = Get-CimInstance Win32_DiskDrive | Sort-Object Index | Select-Object -First 1; "
+                             "if ($d) { $d.SerialNumber }"))
+    if not serial:
+        serial = _solo_alnum(_ps(r"(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid"))
+    return mac.upper(), serial.upper()
+
+
+def codice_macchina():
+    """Codice di questo PC da mostrare e inoltrare: MAC+seriale, le prime 4 accodate in fondo, poi in ASCII decimale."""
+    mac, serial = hardware_fingerprint()
+    base = (mac + serial) or "TIMBROEASYPDF"
+    code = base + base[:4]
+    return "".join(str(ord(c)) for c in code)
+
+
+def _token_payload(codice, scadenza):
+    """I byte firmati: codice del PC e scadenza insieme (così la scadenza non si può cambiare a mano)."""
+    return f"{codice}|{scadenza}".encode("ascii")
+
+
+def verifica_token(codice, token):
+    """True se «token» è una password di sblocco valida per questo «codice» e non ancora scaduta."""
+    try:
+        raw = base64.urlsafe_b64decode(token.strip().encode("ascii"))
+        scadenza, firma = raw[:8].decode("ascii"), raw[8:]
+        if len(firma) != 64 or not scadenza.isdigit():
+            return False
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        Ed25519PublicKey.from_public_bytes(base64.b64decode(LICENSE_PUBKEY)).verify(firma, _token_payload(codice, scadenza))
+        return scadenza >= time.strftime("%Y%m%d")   # YYYYMMDD: il confronto testuale equivale a quello fra date
+    except Exception:
+        return False
+
+
 class Stamp:
     """Un timbro in memoria: l'immagine caricata (originale) e quella usata per timbrare.
 
@@ -4561,6 +4716,7 @@ class App:
             root.after(100, lambda: [self.open_file(p) for p in paths])
         root.after(400, self._check_license)
         self._update_job = root.after(5000, self.check_updates)
+        self._nag_job = root.after(NAG_MINUTI * 60000, self._show_nag)   # promemoria del modulo a pagamento
 
     @property
     def stamp_mode(self):
@@ -4769,6 +4925,10 @@ class App:
         ttk.Label(g, text="Spessore:").pack(side=tk.LEFT, padx=(8, 2))
         self.draw_width_var = tk.IntVar(value=3)
         ttk.Spinbox(g, from_=1, to=10, width=3, textvariable=self.draw_width_var).pack(side=tk.LEFT)
+        bar.separator()
+        g = bar.group()   # gestione email: modulo a pagamento (per ora segnaposto)
+        bar_button(g, "Configurazione posta…", self.cmd_email_config)
+        bar_button(g, "Invio email…", self.cmd_email_send)
         return bar
 
     def _active_draw_color(self):
@@ -8812,6 +8972,36 @@ class App:
                                + "\n\nVuoi aprire la pagina da cui scaricarla?", parent=self.root):
             import webbrowser
             webbrowser.open(url)
+
+    def _machine_code(self):
+        """Il codice di questo PC, calcolato una volta sola (la lettura dell'hardware è un po' lenta)."""
+        if not getattr(self, "_codice_cache", None):
+            self._codice_cache = codice_macchina()
+        return self._codice_cache
+
+    def is_unlocked(self):
+        """True se su questo PC è stata inserita una password di sblocco valida e non scaduta."""
+        token = self.cfg["license_key"]
+        return bool(token) and verifica_token(self._machine_code(), token)
+
+    def _show_nag(self):
+        """Promemoria periodico del modulo a pagamento: compare finché il programma non è sbloccato."""
+        self._nag_job = None
+        if self.is_unlocked():
+            return
+        dialog = NagDialog(self.root, self)
+        self.root.wait_window(dialog.top)
+        if not self.is_unlocked():
+            self._nag_job = self.root.after(NAG_MINUTI * 60000, self._show_nag)
+
+    def _email_todo(self):
+        messagebox.showinfo(APP_NAME, "In fase di sviluppo – modulo a pagamento.", parent=self.root)
+
+    def cmd_email_config(self):
+        self._email_todo()
+
+    def cmd_email_send(self):
+        self._email_todo()
 
     def _check_license(self):
         """Al primo avvio (e quando cambiano) le condizioni d'uso vanno lette e accettate."""

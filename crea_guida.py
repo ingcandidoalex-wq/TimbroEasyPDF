@@ -395,6 +395,11 @@ quanto c'è sotto viene cancellato davvero.</p>
 <p><b>Disegnare sul PDF</b> (penna, evidenziatore, gomma): tieni premuto il tasto sinistro e disegna a
 mano libera direttamente sulla pagina. Scegli il <b>colore</b> e lo <b>spessore</b>; l'evidenziatore è
 semitrasparente. La <b>gomma</b> cancella i tratti su cui passi. Tutto si annulla con <b>Ctrl+Z</b>.</p>
+<p><b>Posta elettronica</b> (<b>Configurazione posta</b> e <b>Invio email</b>, in fondo alla barra «Testo e
+disegno»): è il futuro modulo per spedire il PDF via email, <b>in fase di sviluppo</b> (modulo a pagamento).</p>
+<p>Ogni tanto compare un messaggio che invita a sostenere il programma: per non vederlo più, invia il
+<b>codice del tuo computer</b> all'indirizzo indicato e incolla la <b>password di sblocco</b> che riceverai
+(vale un anno, per quel computer).</p>
 <p><b>Selezionare e copiare il testo</b>: senza strumenti attivi, trascina il mouse sul testo della
 pagina (o fai doppio clic su una parola) per evidenziarlo, poi <b>Ctrl+C</b> per copiarlo negli
 appunti.</p>"""),
