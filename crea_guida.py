@@ -392,6 +392,9 @@ Nelle scansioni spunta <b>Copri con il bianco lo sfondo</b>.</p>
 <p><b>Aggiungi testo</b>: clicca dove scrivere. Le caselle si trascinano per spostarle anche con lo
 strumento attivo; un clic le corregge. <b>Bianchetto</b> e <b>Oscura</b>: trascina un rettangolo,
 quanto c'è sotto viene cancellato davvero.</p>
+<p><b>Disegnare sul PDF</b> (penna, evidenziatore, gomma): tieni premuto il tasto sinistro e disegna a
+mano libera direttamente sulla pagina. Scegli il <b>colore</b> e lo <b>spessore</b>; l'evidenziatore è
+semitrasparente. La <b>gomma</b> cancella i tratti su cui passi. Tutto si annulla con <b>Ctrl+Z</b>.</p>
 <p><b>Selezionare e copiare il testo</b>: senza strumenti attivi, trascina il mouse sul testo della
 pagina (o fai doppio clic su una parola) per evidenziarlo, poi <b>Ctrl+C</b> per copiarlo negli
 appunti.</p>"""),

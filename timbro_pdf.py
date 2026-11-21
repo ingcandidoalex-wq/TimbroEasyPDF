@@ -33,7 +33,7 @@ import pymupdf
 APP_NAME = "TimbroEasyPDF"
 OLD_APP_NAMES = ("TimbroPDF",)   # nomi precedenti: impostazioni e timbri passano alla cartella nuova
 APP_MUTEX = f"{APP_NAME}_in_esecuzione"   # lo cerca l'installatore per sapere se il programma è aperto
-APP_VERSION = "2.7"
+APP_VERSION = "2.8"
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STAMPS_DIR = CONFIG_DIR / "timbri"           # una cartella per ogni timbro salvato
@@ -79,14 +79,18 @@ OCR_LANGUAGES = {"Italiano e inglese": "ita+eng", "Italiano": "ita", "Inglese": 
 
 TABBAR_BG, TAB_BG, TAB_ACTIVE_BG, TAB_DROP_BG = "#d3d4da", "#e6e7ec", "#ffffff", "#bcd4f6"
 TEXT_TOOLS = ("edit_text", "add_text", "whiteout", "blackout")
+DRAW_TOOLS = ("draw_pen", "draw_mark", "draw_erase")   # disegno a mano libera sulla pagina
 TOOL_CURSORS = {"stamp": "crosshair", "edit_text": "xterm", "add_text": "xterm", "whiteout": "tcross",
-                "blackout": "tcross"}
+                "blackout": "tcross", "draw_pen": "pencil", "draw_mark": "pencil", "draw_erase": "dotbox"}
 TOOL_HINTS = {
     "stamp": "Modalità timbro: clicca sul foglio per apporre il timbro. Esc per uscire.",
     "edit_text": "Modifica testo: passa sulle righe (si evidenziano in blu) e clicca quella da correggere. Esc per uscire.",
     "add_text": "Aggiungi testo: clicca dove vuoi scrivere. Esc per uscire.",
     "whiteout": "Bianchetto: trascina un rettangolo sull'area da cancellare. Esc per uscire.",
     "blackout": "Oscura: trascina un rettangolo sull'area da oscurare. Esc per uscire.",
+    "draw_pen": "Penna: disegna a mano libera tenendo premuto il tasto sinistro. Esc per uscire.",
+    "draw_mark": "Evidenziatore: passa sopra tenendo premuto il tasto; il colore è semitrasparente. Esc per uscire.",
+    "draw_erase": "Gomma: passa sopra i tratti disegnati per cancellarli. Esc per uscire.",
 }
 
 PDF_TYPES = [("PDF", "*.pdf"), ("Tutti i file", "*.*")]
@@ -224,7 +228,7 @@ SCHEDE E PAGINE
   a mano i DPI delle immagini a colori e del testo in bianco e nero. Il documento
   aperto non cambia.
 
-TESTO
+TESTO E DISEGNO
 • Modifica testo: clicca una riga per correggerla. Il vecchio testo viene
   eliminato davvero e quello nuovo scritto nello stesso punto. Nelle
   scansioni spunta «Copri con il bianco lo sfondo».
@@ -239,6 +243,9 @@ TESTO
   timbri ripartono ognuna dall'ultima cartella usata per quell'operazione.
 • Bianchetto / Oscura: trascina un rettangolo; quanto c'è sotto viene
   cancellato davvero (i timbri restano: si eliminano a parte).
+• Penna, Evidenziatore, Gomma: disegna a mano libera sulla pagina tenendo
+  premuto il tasto sinistro. Scegli colore e spessore; l'evidenziatore è
+  semitrasparente. La gomma cancella i tratti su cui passi. Ctrl+Z annulla.
 • OCR: riconosce il testo delle scansioni e lo aggiunge invisibile sopra la
   pagina, che resta identica: poi si può cercare, copiare, esportare in Word.
 • Esporta in Word: usa Microsoft Word installato sul PC.
@@ -932,6 +939,10 @@ EDIT_SWATCHES = ("#111111", "#1f3a93", "#b3261e", "#2e7d32", "#ffd600")
 BRUSH_PT = {"pencil": 0.35, "highlight": 1.6, "eraser": 1.2}   # spessore in punti per ogni tacca del cursore
 HIGHLIGHT_OPACITY = 0.4
 EDIT_UNDO = 20
+# disegno a mano libera sulla pagina PDF (penna, evidenziatore, gomma)
+DRAW_COLORS = {"draw_pen": "#1f3a93", "draw_mark": "#ffd600"}   # colore ricordato per penna ed evidenziatore
+DRAW_SWATCHES = EDIT_SWATCHES                                   # colori rapidi (come nell'editor dei timbri)
+DRAW_PT = {"draw_pen": 0.5, "draw_mark": 4.0, "draw_erase": 3.0}   # punti di spessore/raggio per ogni tacca (1–10)
 
 
 def stamp_pixmap(pix):
@@ -1649,6 +1660,9 @@ def render_with_contents(page, xrefs, **kwargs):
 # posizione…) stanno nella chiave TEXT_KEY dello stream, così si spostano e si correggono anche
 # dopo il salvataggio. Posizioni e riquadri sono sulla pagina non ruotata, come in get_text().
 TEXT_KEY = "TimbroPDFTesto"
+# Ogni tratto di disegno a mano libera è anch'esso uno stream a sé: i suoi punti (coordinate PDF vere)
+# stanno nella chiave DRAW_KEY, così la gomma può ritrovarlo ed eliminarlo tutto intero.
+DRAW_KEY = "TimbroPDFDisegno"
 TEXT_COLORS = {"Nero": "#000000", "Blu": "#1f3a93", "Rosso": "#b3261e"}
 LINE_HEIGHT = 1.2      # distanza tra le righe, in multipli della dimensione del font
 TEXT_SHIFT = re.compile(rb"^q 1 0 0 1 (\S+) (\S+) cm\n(.*)\nQ\n$", re.S)
@@ -1782,6 +1796,63 @@ def placed_texts(page):
 def placed_objects(page):
     """Timbri e caselle di testo di TimbroPDF, nell'ordine in cui sono disegnati."""
     return sorted(placed_stamps(page) + placed_texts(page), key=lambda o: o.index)
+
+
+def insert_stroke(page, points, color, width, opacity=1.0):
+    """Disegna un tratto a mano libera come stream nuovo, marcato con i suoi punti. Restituisce lo xref.
+
+    points sono in coordinate PDF vere (de-ruotate), color è (r, g, b) in 0–1, width in punti."""
+    doc = page.parent
+    before = set(page.get_contents())
+    stroke_drawer(points, color, width, opacity)(page)
+    nuovi = [x for x in page.get_contents() if x not in before]
+    if not nuovi:
+        return None
+    xref = nuovi[-1]
+    data = {"points": [[round(px, 2), round(py, 2)] for px, py in points], "width": round(width, 2)}
+    doc.xref_set_key(xref, DRAW_KEY, pymupdf.get_pdf_str(json.dumps(data)))
+    return xref
+
+
+def strokes_on(page):
+    """Tratti di disegno di TimbroPDF sulla pagina: lista (index, xref, points, width)."""
+    doc = page.parent
+    found = []
+    for index, xref in enumerate(page.get_contents()):
+        kind, value = doc.xref_get_key(xref, DRAW_KEY)
+        if kind != "string":
+            continue
+        try:
+            data = json.loads(value)
+            pts = [(p[0], p[1]) for p in data["points"]]
+        except (ValueError, KeyError, TypeError):
+            continue
+        found.append((index, xref, pts, data.get("width", 1)))
+    return found
+
+
+def erase_strokes(page, xrefs):
+    """Toglie dalla pagina gli stream dei tratti indicati (per xref)."""
+    xrefs = set(xrefs)
+    set_contents(page, [x for x in page.get_contents() if x not in xrefs])
+
+
+def _seg_dist2(px, py, ax, ay, bx, by):
+    """Distanza al quadrato dal punto (px, py) al segmento (ax, ay)-(bx, by)."""
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return (px - ax) ** 2 + (py - ay) ** 2
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+    return (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2
+
+
+def stroke_hit(points, width, pt, radius):
+    """True se il punto pt (coordinate PDF vere) è entro (radius + metà spessore) dalla polilinea del tratto."""
+    px, py = pt
+    r2 = (radius + width / 2) ** 2
+    if len(points) == 1:
+        return (px - points[0][0]) ** 2 + (py - points[0][1]) ** 2 <= r2
+    return any(_seg_dist2(px, py, ax, ay, bx, by) <= r2 for (ax, ay), (bx, by) in zip(points, points[1:]))
 
 
 def move_placed_text(page, box, dx, dy):
@@ -4458,6 +4529,10 @@ class App:
         self._text_sel = None          # selezione di testo in corso (trascinamento)
         self._clip_text = ""           # ultimo testo selezionato, da copiare con Ctrl+C
         self._area = None              # rettangolo del bianchetto in corso
+        self._stroke = None            # tratto di disegno in corso (punti-evento della finestra)
+        self._erasing = False          # gesto gomma in corso
+        self._erased = False           # il gesto gomma ha già tolto qualcosa (un solo undo per gesto)
+        self.draw_colors = dict(DRAW_COLORS)   # colore ricordato per penna ed evidenziatore
         self._find = None              # ricerca: testo, documento, risultati, posizione
         self.px_per_pt = root.winfo_fpixels("1i") / 72
 
@@ -4630,10 +4705,13 @@ class App:
         bar.separator()
 
         g = bar.labeled_group("Zoom")
-        bar_button(g, "−", lambda: self._zoom_at(1 / 1.25), width=3, tip="Riduci")
+        zoomout_i, zoomin_i = self._mdl2(0xECC9), self._mdl2(0xECC8)   # − e + cerchiati
+        bar_button(g, "" if zoomout_i else "−", lambda: self._zoom_at(1 / 1.25), width=None if zoomout_i else 3,
+                   image=zoomout_i, tip="Riduci (zoom indietro)")
         self.zoom_lbl = ttk.Label(g, text="100%", width=6, anchor="center")
         self.zoom_lbl.pack(side=tk.LEFT)
-        bar_button(g, "+", lambda: self._zoom_at(1.25), width=3, tip="Ingrandisci")
+        bar_button(g, "" if zoomin_i else "+", lambda: self._zoom_at(1.25), width=None if zoomin_i else 3,
+                   image=zoomin_i, tip="Ingrandisci (zoom avanti)")
         bar_button(g, "Larghezza", lambda: self.set_zoom_mode("width"))
         bar_button(g, "Pagina intera", lambda: self.set_zoom_mode("page"))
         bar.separator()
@@ -4652,7 +4730,7 @@ class App:
         bar.separator()
 
         tg = bar.labeled_group("Mostra")   # interruttori delle barre: accanto a Cerca, come gli altri gruppi
-        for key, label, tip in (("text", "Testo", "Mostra/nascondi gli strumenti di testo"),
+        for key, label, tip in (("text", "Testo", "Mostra/nascondi gli strumenti di testo e disegno"),
                                 ("pages", "Pagine", "Mostra/nascondi unisci, dividi e vista d'insieme"),
                                 ("stamps", "Timbri", "Mostra/nascondi il pannello dei timbri")):
             cb = ttk.Checkbutton(tg, text=label, style="Toolbutton", variable=self._visible_vars[key],
@@ -4672,7 +4750,44 @@ class App:
         bar.separator()
         bar_button(bar.group(), "Riconosci testo (OCR)…", self.cmd_ocr)
         bar_button(bar.group(), "Esporta in Word…", self.cmd_export_word)
+        bar.separator()
+        g = bar.group()
+        for value, text in (("draw_pen", "✎ Penna"), ("draw_mark", "▬ Evidenziatore"), ("draw_erase", "◌ Gomma")):
+            ttk.Radiobutton(g, text=text, value=value, variable=self.tool_var, style="Toolbutton",
+                            command=lambda v=value: self.set_tool(None if self.tool == v else v)
+                            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        g = bar.group()
+        ttk.Label(g, text="Colore:").pack(side=tk.LEFT, padx=(4, 2))
+        self.draw_swatch = tk.Label(g, width=3, relief=tk.SOLID, bd=1, cursor="hand2",
+                                    bg=self.draw_colors["draw_pen"])
+        self.draw_swatch.pack(side=tk.LEFT)
+        self.draw_swatch.bind("<Button-1>", lambda e: self._pick_draw_color())
+        for color in DRAW_SWATCHES:
+            chip = tk.Label(g, width=1, bg=color, relief=tk.RAISED, bd=1, cursor="hand2")
+            chip.pack(side=tk.LEFT, padx=1)
+            chip.bind("<Button-1>", lambda e, c=color: self._set_draw_color(c))
+        ttk.Label(g, text="Spessore:").pack(side=tk.LEFT, padx=(8, 2))
+        self.draw_width_var = tk.IntVar(value=3)
+        ttk.Spinbox(g, from_=1, to=10, width=3, textvariable=self.draw_width_var).pack(side=tk.LEFT)
         return bar
+
+    def _active_draw_color(self):
+        """La chiave di colore dello strumento di disegno attivo (penna o evidenziatore; default penna)."""
+        return self.tool if self.tool in ("draw_pen", "draw_mark") else "draw_pen"
+
+    def _sync_draw_swatch(self):
+        if hasattr(self, "draw_swatch"):
+            self.draw_swatch.configure(bg=self.draw_colors[self._active_draw_color()])
+
+    def _pick_draw_color(self):
+        color = colorchooser.askcolor(color=self.draw_colors[self._active_draw_color()],
+                                      parent=self.root, title="Colore del disegno")[1]
+        if color:
+            self._set_draw_color(color)
+
+    def _set_draw_color(self, color):
+        self.draw_colors[self._active_draw_color()] = color
+        self._sync_draw_swatch()
 
     def _build_pages_bar(self):
         bar = ToolBar(self.root, "pages", self._on_grip)
@@ -4998,7 +5113,19 @@ class App:
         except tk.TclError:
             return
         self._configure_group_style()   # lo stile dei titoli di gruppo va riapplicato dopo il cambio tema
+        self._refresh_theme(self.root)  # Tk 9: il cambio tema da solo non raggiunge i widget dentro i Canvas
         self.cfg["theme"] = name
+
+    def _refresh_theme(self, widget):
+        """Ribatte <<ThemeChanged>> a ogni widget. In Tk 9 il cambio di tema non si propaga da solo ai
+        widget dentro un Canvas (pannello timbri, miniature) né ad alcune scrollbar: senza questo passaggio,
+        tornando a un tema dopo averne provato un altro, bottoni e barre restano con l'aspetto precedente."""
+        try:
+            widget.event_generate("<<ThemeChanged>>", when="now")   # subito e in ordine, non in coda
+        except tk.TclError:
+            return   # widget in via di distruzione: salto lui e i suoi figli
+        for child in widget.winfo_children():
+            self._refresh_theme(child)
 
     def reset_layout(self):
         self.layout = default_layout()
@@ -5311,9 +5438,9 @@ class App:
 
         v = tk.Menu(m, tearoff=False)
         v.add_command(label="Zoom avanti", accelerator="Ctrl++", command=lambda: self._zoom_at(1.25),
-                      image=self._glyph("E8A3"), **ic)
+                      image=self._mdl2(0xECC8), **ic)
         v.add_command(label="Zoom indietro", accelerator="Ctrl+-", command=lambda: self._zoom_at(1 / 1.25),
-                      image=self._glyph("E71F"), **ic)
+                      image=self._mdl2(0xECC9), **ic)
         v.add_command(label="Adatta alla larghezza", accelerator="Ctrl+2", command=lambda: self.set_zoom_mode("width"))
         v.add_command(label="Pagina intera", accelerator="Ctrl+0", command=lambda: self.set_zoom_mode("page"),
                       image=self._glyph("E9A6"), **ic)
@@ -5327,7 +5454,7 @@ class App:
         v.add_radiobutton(label="Scorrimento continuo (tutte le pagine)", value="continuous",
                           variable=self.scroll_mode_var, command=self._apply_scroll_mode)
         v.add_separator()
-        v.add_checkbutton(label="Mostra la barra del testo (modifica, bianchetto, OCR…)",
+        v.add_checkbutton(label="Mostra la barra testo e disegno (modifica, bianchetto, penna, OCR…)",
                           variable=self.show_text_var,
                           command=lambda: self._set_visible("text", self.show_text_var.get()))
         v.add_checkbutton(label="Mostra la barra delle pagine (unisci, dividi, vista d'insieme)",
@@ -5361,10 +5488,14 @@ class App:
         x.add_command(label="Oscura (copri con il nero)", accelerator="Ctrl+Maiusc+B",
                       command=lambda: self.set_tool("blackout"))
         x.add_separator()
+        x.add_command(label="Penna (disegna a mano libera)", command=lambda: self.set_tool("draw_pen"))
+        x.add_command(label="Evidenziatore", command=lambda: self.set_tool("draw_mark"))
+        x.add_command(label="Gomma (cancella i disegni)", command=lambda: self.set_tool("draw_erase"))
+        x.add_separator()
         x.add_command(label="Riconosci testo (OCR)…", accelerator="Ctrl+Maiusc+O", command=self.cmd_ocr)
         x.add_command(label="Cerca", accelerator="Ctrl+F", command=self.focus_find,
                       image=self._glyph("E721"), **ic)
-        m.add_cascade(label="Testo", menu=x)
+        m.add_cascade(label="Testo e disegno", menu=x)
 
         t = tk.Menu(m, tearoff=False)
         t.add_command(label="Aggiungi timbro da immagine…", accelerator="Ctrl+Maiusc+N", command=self.cmd_add_stamp,
@@ -7114,6 +7245,21 @@ class App:
                 self.view.create_rectangle(cx, cy, cx, cy, tags="area", width=2, dash=(4, 3),
                                            outline="#d32f2f" if self.tool == "blackout" else "#1a73e8")
             return
+        if self.tool in DRAW_TOOLS:
+            if not (self.doc and self.doc[self.current].rect.contains(
+                    pymupdf.Point(self._view_to_page(event.x, event.y)))):
+                return
+            if self.tool == "draw_erase":
+                self._erasing, self._erased = True, False
+                self._erase_at(event.x, event.y)
+            else:
+                self._stroke = [(event.x, event.y)]
+                cx, cy = self.view.canvasx(event.x), self.view.canvasy(event.y)
+                w = max(1.0, self._draw_width_pt() * self.cur_zoom)
+                self.view.create_line(cx, cy, cx + 0.5, cy, tags="stroke", fill=self.draw_colors[self.tool],
+                                      width=w, capstyle=tk.ROUND, joinstyle=tk.ROUND,
+                                      stipple="gray50" if self.tool == "draw_mark" else "")
+            return
         hit = self._stamp_at(event.x, event.y)
         if hit:
             # un timbro o una casella di testo: si seleziona e, se il mouse si muove, si trascina
@@ -7144,6 +7290,16 @@ class App:
             x0, y0 = self._area
             self.view.coords("area", self.view.canvasx(x0), self.view.canvasy(y0),
                              self.view.canvasx(event.x), self.view.canvasy(event.y))
+            return
+        if self._erasing:
+            self._erase_at(event.x, event.y)
+            return
+        if self._stroke is not None:
+            lx, ly = self._stroke[-1]
+            if (event.x - lx) ** 2 + (event.y - ly) ** 2 >= 4:   # salta spostamenti < 2 px
+                self._stroke.append((event.x, event.y))
+                self.view.coords("stroke", *[v for ex, ey in self._stroke
+                                             for v in (self.view.canvasx(ex), self.view.canvasy(ey))])
             return
         if self.tool and not (self._drag and self.tool in ("edit_text", "add_text")):
             return
@@ -7190,6 +7346,14 @@ class App:
         if self._area:
             self._apply_area(event.x, event.y)
             return
+        if self._erasing:
+            self._erasing = False
+            if self._erased:
+                self.status("Tratti cancellati. (Ctrl+Z per annullare)")
+            return
+        if self._stroke is not None:
+            self._commit_stroke()
+            return
         if self.tool and not (self._drag and self.tool in ("edit_text", "add_text")):
             return
         d, self._drag = self._drag, None
@@ -7219,6 +7383,11 @@ class App:
             self._redraw_ghost()
         elif self.tool in ("edit_text", "add_text"):
             self._hover_text(event.x, event.y)
+        elif self.tool == "draw_erase":
+            self.view.delete("brush")
+            r = self._draw_width_pt("draw_erase") * self.cur_zoom
+            cx, cy = self.view.canvasx(event.x), self.view.canvasy(event.y)
+            self.view.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#888", dash=(2, 2), tags="brush")
         elif self.tool is None and self.doc and not self._drag:
             hit = self._stamp_at(event.x, event.y)
             cursor = "fleur" if hit else ("xterm" if self._word_at(event.x, event.y) else "arrow")
@@ -7540,12 +7709,15 @@ class App:
             if not self.stamp:
                 tool = self.tool if self.tool != "stamp" else None
         self.tool = tool
-        self.tool_var.set(tool if tool in TEXT_TOOLS else "")
+        self.tool_var.set(tool if tool in TEXT_TOOLS + DRAW_TOOLS else "")
         self._area = None
+        self._stroke = None
+        self._erasing = False
         self._clear_text_selection()
         self._paint_mode_btn()
-        self.view.delete("area", "hover")
+        self.view.delete("area", "hover", "stroke", "brush")
         self.view.configure(cursor=TOOL_CURSORS.get(tool, "arrow"))
+        self._sync_draw_swatch()
         self._draw_stamp_marks()
         self._redraw_ghost()
         if tool:
@@ -7809,6 +7981,46 @@ class App:
         self._doc_changed(pages=[self.current])
         self.status(f"Area {'oscurata' if black else 'cancellata'}: il contenuto sotto è eliminato davvero "
                     "(timbri e caselle di testo restano). Ctrl+Z per annullare.")
+
+    # ------------------------------------------------------- disegno a mano libera
+    def _draw_width_pt(self, tool=None):
+        """Spessore (penna/evidenziatore) o raggio (gomma) in punti PDF per lo strumento indicato."""
+        tool = tool or self.tool
+        return max(0.3, self.draw_width_var.get() * DRAW_PT.get(tool, 1.0))
+
+    def _to_pdf(self, x, y):
+        """Punto della finestra -> punto in coordinate PDF vere (de-ruotate) della pagina corrente."""
+        page = self.doc[self.current]
+        return tuple(pymupdf.Point(self._view_to_page(x, y)) * page.derotation_matrix)
+
+    def _commit_stroke(self):
+        """Fine di un tratto di penna/evidenziatore: lo scrive sulla pagina come stream nuovo."""
+        points, self._stroke = self._stroke, None
+        self.view.delete("stroke")
+        if not points:
+            return
+        page = self.doc[self.current]
+        pdf_pts = [self._to_pdf(ex, ey) for ex, ey in points]
+        color = hex_to_rgb(self.draw_colors[self.tool])
+        opacity = HIGHLIGHT_OPACITY if self.tool == "draw_mark" else 1.0
+        self._snapshot()
+        insert_stroke(page, pdf_pts, color, self._draw_width_pt(), opacity)
+        self._doc_changed(pages=[self.current])
+        self.status("Disegno aggiunto. (Ctrl+Z per annullare)")
+
+    def _erase_at(self, x, y):
+        """Gomma: toglie i tratti di disegno che passano sotto il cursore."""
+        page = self.doc[self.current]
+        pt = self._to_pdf(x, y)
+        radius = self._draw_width_pt("draw_erase")
+        hit = [xref for _i, xref, pts, w in strokes_on(page) if stroke_hit(pts, w, pt, radius)]
+        if not hit:
+            return
+        if not self._erased:
+            self._snapshot()
+            self._erased = True
+        erase_strokes(page, hit)
+        self._doc_changed(pages=[self.current])
 
     # ------------------------------------------------------- ricerca
     def focus_find(self):
