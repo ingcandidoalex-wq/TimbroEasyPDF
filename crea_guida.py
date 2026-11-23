@@ -398,8 +398,9 @@ semitrasparente. La <b>gomma</b> cancella i tratti su cui passi. Tutto si annull
 <p><b>Posta elettronica</b> (<b>Configurazione posta</b> e <b>Invio email</b>, in fondo alla barra «Testo e
 disegno»): è il futuro modulo per spedire il PDF via email, <b>in fase di sviluppo</b> (modulo a pagamento).</p>
 <p>Ogni tanto compare un messaggio che invita a sostenere il programma: per non vederlo più, invia il
-<b>codice del tuo computer</b> all'indirizzo indicato e incolla la <b>password di sblocco</b> che riceverai
-(vale un anno, per quel computer).</p>
+<b>codice del tuo computer</b> all'indirizzo indicato <b>allegando la ricevuta di un pagamento di 5 € su
+PayPal</b> (a sostegno dei costi) e incolla la <b>password di sblocco</b> che riceverai (vale un anno, per
+quel computer).</p>
 <p><b>Selezionare e copiare il testo</b>: senza strumenti attivi, trascina il mouse sul testo della
 pagina (o fai doppio clic su una parola) per evidenziarlo, poi <b>Ctrl+C</b> per copiarlo negli
 appunti.</p>"""),

@@ -3312,6 +3312,7 @@ LICENSE_EMAIL = "ing.candido.alex@gmail.com"   # dove inoltrare il codice del PC
 LICENSE_PUBKEY = "ZxrjMPYLqVVykzuhhwJEkCG/prVzMWUnUPaYrrUGzc8="   # chiave pubblica Ed25519 (la privata resta solo all'autore)
 NAG_MINUTI = 30        # ogni quanti minuti ricompare il promemoria finché non si sblocca
 LICENSE_GIORNI = 365   # durata predefinita di uno sblocco; poi il promemoria torna e serve una nuova password
+LICENSE_PREZZO = "5 €"   # contributo da allegare (pagamento PayPal all'indirizzo DONATION_EMAIL) per lo sblocco
 LICENSE_VERSION = 2   # va aumentato quando cambiano le condizioni: si richiede di accettarle di nuovo
 # condizioni d'uso mostrate dal programma e dal setup (il testo legale della licenza è nel file LICENSE)
 LICENSE_TEXT = f"""\
@@ -3505,7 +3506,8 @@ class NagDialog:
         tk.Label(head, image=self._icon).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Label(head, wraplength=560, justify=tk.LEFT, font=("Segoe UI", 10), text=(
             f"Grazie per usare {APP_NAME}!\n\nSe il programma ti piace e vuoi disattivare questi messaggi, invia il "
-            f"codice qui sotto a  {LICENSE_EMAIL}  : riceverai una password di sblocco valida un anno.")
+            f"codice qui sotto a  {LICENSE_EMAIL}  allegando la ricevuta di un pagamento di {LICENSE_PREZZO} su PayPal "
+            f"({DONATION_EMAIL}), per sostenere i costi dell'iniziativa: riceverai una password di sblocco valida un anno.")
             ).pack(side=tk.LEFT, fill=tk.X)
 
         cf = ttk.LabelFrame(body, text=" Il codice di questo computer ", padding=10)
@@ -3519,6 +3521,7 @@ class NagDialog:
         crow.pack(anchor="w", pady=(8, 0))
         ttk.Button(crow, text="Copia il codice", command=self._copy_code).pack(side=tk.LEFT)
         ttk.Button(crow, text="Scrivi l'email…", command=self._mail).pack(side=tk.LEFT, padx=6)
+        ttk.Button(crow, text=f"Paga {LICENSE_PREZZO} su PayPal", command=self._paypal).pack(side=tk.LEFT, padx=(0, 6))
         self._cnote = ttk.Label(crow, foreground="#2e7d32")
         self._cnote.pack(side=tk.LEFT, padx=6)
 
@@ -3547,10 +3550,20 @@ class NagDialog:
         self.top.clipboard_append(self._code)
         self._cnote.configure(foreground="#2e7d32", text="Codice copiato.")
 
+    def _paypal(self):
+        """Copia l'indirizzo PayPal e apre il sito: il pagamento di sblocco va fatto a DONATION_EMAIL."""
+        import webbrowser
+        self.top.clipboard_clear()
+        self.top.clipboard_append(DONATION_EMAIL)
+        self._cnote.configure(foreground="#2e7d32",
+                              text=f"Indirizzo PayPal copiato ({DONATION_EMAIL}): incollalo come destinatario.")
+        webbrowser.open(DONATION_URL)
+
     def _mail(self):
         from urllib.parse import quote
         subject = quote(f"{APP_NAME} {APP_VERSION} – richiesta password di sblocco")
-        body = quote(f"Buongiorno,\nvorrei la password di sblocco di {APP_NAME} per questo computer.\n\n"
+        body = quote(f"Buongiorno,\nvorrei la password di sblocco di {APP_NAME} per questo computer.\n"
+                     f"Allego la ricevuta del pagamento di {LICENSE_PREZZO} su PayPal ({DONATION_EMAIL}).\n\n"
                      f"Codice:\n{self._code}\n")
         try:
             os.startfile(f"mailto:{LICENSE_EMAIL}?subject={subject}&body={body}")
@@ -8969,6 +8982,8 @@ class App:
         notes = notes.strip()
         if messagebox.askyesno(APP_NAME, f"È disponibile la versione {version} di {APP_NAME} (tu hai la {APP_VERSION})."
                                + (f"\n\nNovità:\n{notes[:700]}" if notes else "")
+                               + "\n\nNota: questa versione mostra ogni tanto un messaggio pubblicitario (un invito a "
+                                 "sostenere il programma), che si può disattivare sbloccandolo."
                                + "\n\nVuoi aprire la pagina da cui scaricarla?", parent=self.root):
             import webbrowser
             webbrowser.open(url)
